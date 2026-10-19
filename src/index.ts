@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Delivery, type Clock } from "./delivery.ts";
 import { defaultRun } from "./exec.ts";
+import { blockingWaitReason } from "./guard.ts";
 import { cleanupOldLogs, MonitorLog, sessionLogDir } from "./log.ts";
 import { Registry, type MonitorEntry } from "./registry.ts";
 import { loadSettings, type Settings } from "./settings.ts";
@@ -97,6 +98,14 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		settings = loadSettings(ctx.cwd, overrides.home);
 		logDir = sessionLogDir(ctx.sessionManager.getSessionId(), overrides.logRoot);
 		cleanupOldLogs(overrides.logRoot);
+	});
+
+	pi.on("tool_call", async (event) => {
+		if (!settings.blockBlockingWaits || event.toolName !== "bash") return;
+		const command = (event.input as { command?: unknown }).command;
+		if (typeof command !== "string") return;
+		const reason = blockingWaitReason(command);
+		return reason ? { block: true, reason } : undefined;
 	});
 
 	pi.on("session_shutdown", async () => {
