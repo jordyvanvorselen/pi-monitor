@@ -17,6 +17,8 @@ export interface MonitorSpec {
 	timeoutMinutes: number;
 	/** Working directory. Defaults to the session cwd. */
 	cwd?: string;
+	/** Command monitors: include the last output in the success message too. */
+	reportOutput?: boolean;
 }
 
 /** `ended` = a command watcher that did not survive a session restart. */
@@ -46,6 +48,8 @@ export interface MonitorRecord extends Target {
 	activity: ActivityBucket[];
 	/** The model is handling an event from this monitor. */
 	handling: boolean;
+	/** Not shown in the UI yet, e.g. a bash command the safety net may still hand back. */
+	hidden: boolean;
 	deliveredTokens: number;
 	log: MonitorLog;
 	controller: AbortController;
@@ -72,6 +76,13 @@ export interface RegistryDeps {
 
 export class MonitorLimitError extends Error {}
 
+export interface StartOptions {
+	/** Use this source instead of building one from the spec, e.g. an adopted child process. */
+	source?: Source;
+	/** Start without showing it in the UI. */
+	hidden?: boolean;
+}
+
 export class Registry {
 	readonly monitors = new Map<string, MonitorRecord>();
 	private nextId = 1;
@@ -91,6 +102,29 @@ export class Registry {
 		return [...this.monitors.values()];
 	}
 
+	/** Monitors the UI shows. */
+	visible(): MonitorRecord[] {
+		return this.list().filter((m) => !m.hidden);
+	}
+
+	/** Show a hidden monitor and let it wake the model, e.g. when the safety net moves a command to the background. */
+	reveal(id: string, wake: WakeLevel): void {
+		const record = this.monitors.get(id);
+		if (!record) return;
+		record.hidden = false;
+		record.wake = wake;
+		record.log.append(`# moved to the background, wake: ${wake}`);
+		this.deps.onChange();
+	}
+
+	/** Forget a finished monitor, e.g. a bash command that ended before it was moved to the background. */
+	discard(id: string): void {
+		const record = this.monitors.get(id);
+		if (!record || record.status === "running") return;
+		this.monitors.delete(id);
+		this.deps.onChange();
+	}
+
 	get(id: string): MonitorRecord | undefined {
 		return this.monitors.get(id);
 	}
@@ -101,12 +135,12 @@ export class Registry {
 		if (Number.isInteger(n) && n >= this.nextId) this.nextId = n + 1;
 	}
 
-	start(spec: MonitorSpec, restore?: { id: string; startedAt: number }): MonitorRecord {
+	start(spec: MonitorSpec, restore?: { id: string; startedAt: number }, options: StartOptions = {}): MonitorRecord {
 		if (this.running().length >= this.deps.maxConcurrent())
 			throw new MonitorLimitError(
 				`Too many monitors (${this.deps.maxConcurrent()} running). Stop one with monitor_stop first.`,
 			);
-		const source = this.deps.buildSource(spec);
+		const source = options.source ?? this.deps.buildSource(spec);
 		const id = restore?.id ?? `m${this.nextId++}`;
 		this.reserveId(id);
 		const now = this.clock.now();
@@ -125,6 +159,7 @@ export class Registry {
 			progress: {},
 			activity: [],
 			handling: false,
+			hidden: options.hidden ?? false,
 			deliveredTokens: 0,
 			log,
 			controller: new AbortController(),
@@ -172,6 +207,7 @@ export class Registry {
 			progress: {},
 			activity: [],
 			handling: false,
+			hidden: false,
 			deliveredTokens: 0,
 			log: new MonitorLog(""),
 			controller: new AbortController(),
@@ -215,7 +251,7 @@ export class Registry {
 	savedTokens(now = this.clock.now()): number {
 		let total = 0;
 		for (const record of this.monitors.values()) {
-			if (record.wake === "never" || record.status === "ended") continue;
+			if (record.wake === "never" || record.status === "ended" || record.hidden) continue;
 			total += savedTokens((record.endedAt ?? now) - record.startedAt, record.deliveredTokens);
 		}
 		return total;
@@ -353,7 +389,7 @@ export interface Started {
  * (for example a bash interceptor that turns a blocking wait into a monitor).
  * Throws `MonitorLimitError` or a source error with a message meant for the model.
  */
-export function startMonitor(registry: Registry, spec: MonitorSpec): Started {
-	const record = registry.start(spec);
+export function startMonitor(registry: Registry, spec: MonitorSpec, options: StartOptions = {}): Started {
+	const record = registry.start(spec, undefined, options);
 	return { id: record.id, text: startedText(record.id, record.description, record.label, record.wake), record };
 }

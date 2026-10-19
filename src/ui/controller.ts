@@ -128,7 +128,7 @@ export class UiController {
 	}
 
 	ended(record: MonitorRecord): void {
-		if (!this.ctx) return;
+		if (!this.ctx || record.hidden) return;
 		this.changed(true);
 		if (!this.deps.settings().desktopNotifications) return;
 		if (record.status !== "success" && record.status !== "failure" && record.status !== "timeout") return;
@@ -139,7 +139,7 @@ export class UiController {
 	private draw(width: number, paint: Paint): string[] {
 		const settings = this.deps.settings();
 		return renderDock(
-			this.deps.registry.list(),
+			this.deps.registry.visible(),
 			{
 				width,
 				now: this.deps.now(),
@@ -159,7 +159,7 @@ export class UiController {
 		if (!ctx) return;
 		const now = this.deps.now();
 		this.lastRefresh = now;
-		const records = this.deps.registry.list();
+		const records = this.deps.registry.visible();
 		const visible = records.some((r) => isVisible(r, now));
 
 		if (this.mode === "hidden" || !visible) {
@@ -178,7 +178,7 @@ export class UiController {
 			this.tui?.requestRender();
 		}
 
-		const running = this.deps.registry.running().length;
+		const running = this.deps.registry.visible().filter((r) => r.status === "running").length;
 		const status =
 			this.mode === "hidden" && running > 0
 				? ctx.ui.theme.fg("accent", "◉") + ctx.ui.theme.fg("muted", ` ${running} monitor${running === 1 ? "" : "s"}`)
@@ -199,7 +199,7 @@ export class UiController {
 
 	private schedule(): void {
 		const now = this.deps.now();
-		const records = this.deps.registry.list();
+		const records = this.deps.registry.visible();
 		const running = records.some((r) => r.status === "running");
 		const fading = records.some((r) => r.status !== "running" && isVisible(r, now));
 		const calm = this.deps.settings().reducedMotion;

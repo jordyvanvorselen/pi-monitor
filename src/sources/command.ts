@@ -27,8 +27,8 @@ export function killGroup(pid: number, signal: NodeJS.Signals): void {
  * - `log`: follow a process started elsewhere through its log file and pid. Planned, not built yet.
  */
 export type CommandOrigin =
-	| { kind: "spawn"; command: string }
-	| { kind: "child"; child: ChildProcess; label: string }
+	| { kind: "spawn"; command: string; reportOutput?: boolean }
+	| { kind: "child"; child: ChildProcess; label: string; reportOutput?: boolean }
 	| { kind: "log"; path: string; pid?: number; label: string };
 
 const shortLabel = (text: string) => (text.length > 60 ? `${text.slice(0, 59)}…` : text);
@@ -53,17 +53,25 @@ export function commandSource(origin: string | CommandOrigin): Source {
 							env: { ...process.env, PAGER: "cat", GH_PAGER: "cat", GIT_PAGER: "cat" },
 						}),
 						ctx,
+						from.reportOutput ?? false,
 					),
 			};
 		case "child":
-			return { kind: "command", label: shortLabel(from.label), start: (ctx) => watchChild(from.child, ctx) };
+			return {
+				kind: "command",
+				label: shortLabel(from.label),
+				start: (ctx) => watchChild(from.child, ctx, from.reportOutput ?? false),
+			};
 		case "log":
 			throw new Error("Adopting a process through its log file is not supported yet.");
 	}
 }
 
-/** Follow a child process until it exits: stream its lines, kill its group on abort. */
-function watchChild(child: ChildProcess, ctx: SourceContext): Promise<Outcome> {
+/**
+ * Follow a child process until it exits: stream its lines, kill its group on abort.
+ * With `reportOutput` the success outcome carries the last lines too (timers, background commands).
+ */
+function watchChild(child: ChildProcess, ctx: SourceContext, reportOutput: boolean): Promise<Outcome> {
 	return new Promise<Outcome>((resolve) => {
 		const started = ctx.now();
 		const recent: string[] = [];
@@ -105,8 +113,11 @@ function watchChild(child: ChildProcess, ctx: SourceContext): Promise<Outcome> {
 		child.on("close", (code, signal) => {
 			const took = formatDuration(ctx.now() - started);
 			if (ctx.signal.aborted) return finish({ status: "stopped", summary: `stopped after ${took}` });
-			if (code === 0) return finish({ status: "success", summary: `exited 0 after ${took}` });
 			const { lines, dropped } = excerpt(recent, TAIL_LINES);
+			if (code === 0) {
+				const output = reportOutput && lines.length ? { context: "output:", detail: lines, dropped } : {};
+				return finish({ status: "success", summary: `exited 0 after ${took}`, ...output });
+			}
 			const how = code === null ? `killed by ${signal}` : `exited with code ${code}`;
 			finish({ status: "failure", summary: `${how} after ${took}`, context: "last output:", detail: lines, dropped });
 		});
