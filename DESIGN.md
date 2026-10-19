@@ -38,7 +38,9 @@ Starts a watcher and returns at once.
   description: string,          // "CI for PR #42". Shown in UI and events.
   // Exactly one source:
   command?: string,             // Generic: each stdout line is an event.
-  gh_run?: string | number,     // Run id, URL, or "latest" for the current branch.
+  gh_run?: string | number,     // Run id, URL, "latest" (newest run of HEAD) or "next" (next run to start).
+  branch?: string,              // gh_run "latest"/"next": branch instead of the current one.
+  workflow?: string,            // gh_run "latest"/"next": only this workflow.
   gh_pr?: string | number,      // All checks on a PR.
   file?: string,                // Tail a file. Use with match.
   url?: string,                 // Wait until the URL answers 2xx.
@@ -63,7 +65,9 @@ Started m3 "CI for PR #42" (gh run 123456). You will be notified when it ends. C
 } // "m3", or "all"
 ```
 
-There is no list or read tool. The model reads the full log with the normal `read` tool. Each event message contains the log path.
+There is no list or read tool. The model reads the full log with the normal `read` tool. Messages for failures and cut output contain the log path.
+
+Every stop has a reason, stored in the end entry and shown in the summary: "stopped by the model" (`monitor_stop`), "stopped by the user" (`/monitors`, or an aborted bash call the safety net was running), "stopped at session shutdown", or "timed out". A stop by the user is queued for the model with `deliverAs: "nextTurn"`: it hears about it with its next turn, without being woken. A stop by the model stays silent.
 
 ## Event flow
 
@@ -100,17 +104,28 @@ Messages use `customType: "monitor"` with a custom renderer. The transcript show
 An event message is capped at about 400 tokens:
 
 ```
-[monitor m3 "CI for PR #42"] FAILED after 6m12s
+[monitor m3 "CI for PR #42"] failed: CI #42 failure after 6m12s: test
 job "test" step "Run unit tests" failed:
   ✗ extension.test.ts > loads rules lazily
     Expected 2, received 3 (tests/extension.test.ts:88)
-  … 214 more lines: /tmp/pi-monitor/m3.log
+log (214 more lines): /tmp/pi-monitor/m3.log
+```
+
+A success that fits stays short and has no log path:
+
+```
+[monitor m1 "sleep 45 && echo done"] done: exited 0 after 45s
+output:
+  done
 ```
 
 Rules:
 
 - Strip ANSI codes, timestamps and GitHub log prefixes.
-- Keep the last 30 lines of the failed step, then add the log path.
+- Short status words: `done`, `failed`, `timed out`. The transcript's collapsed line shows the status as a glyph and the summary without the status word.
+- Keep the last 30 lines of the failed step.
+- The log path goes on its own line after the body, and only for failures, timeouts and cut output. It stays absolute so `read` can open it.
+- Command monitors with `wake: "final"` (and intercepted commands) put their last output in the success message too.
 - Collapse repeated lines: `(×37) Waiting for job…`.
 - Batches hold at most 20 lines. Extra lines are counted and saved to the log.
 
@@ -149,7 +164,8 @@ Other modules start monitors with `startMonitor(registry, spec)` from `registry.
 - Polls `gh run view <id> --json status,conclusion,jobs,…` with backoff: every 5 seconds for the first minute, then 15, then 30 after five minutes.
 - Compares each poll with the last one. It emits **changes only**: job started, job finished, run finished.
 - On a failed job it runs `gh run view --job <id> --log-failed` and keeps the tail.
-- `"latest"` resolves to the newest run for `git rev-parse HEAD` on `git branch --show-current`. If the run does not exist yet, it waits up to 60 seconds, then falls back to the newest run on the branch. This covers "push, then monitor".
+- `"latest"` resolves to the newest run for `git rev-parse HEAD` on `git branch --show-current` (or `branch`). If the run does not exist yet, it waits up to 60 seconds, then falls back to the newest run on the branch. This covers "push, then monitor". A run that already finished returns its result at once.
+- `"next"` waits for the first run on the branch created after the monitor started (5 s of clock skew allowed), polling `gh run list --branch <b> [--workflow <w>]` with the usual backoff, then watches it like any run. Use it for "watch CI" when nothing runs yet. The monitor timeout ends the wait.
 - Once per run it asks `gh run list --workflow <id> --status success --limit 10` for the median duration. The UI shows it as an ETA bar.
 - Auth errors and a missing `gh` end the monitor at once. Other gh errors are retried; five in a row end it.
 
@@ -248,7 +264,7 @@ bash tool_call
 - **Obviously short**: every command in the line starts with a known quick command (`ls`, `cat`, `rg`, `jq`, `git status/diff/log/show/…`, …). Test runners are not on the list; they can take long.
 - **Classifier**: `ctx.modelRegistry.getAvailableOfType("classifier")`, the pinned `classifier` setting or the first one. One choice question (`background`, `short`, `unsure`) about `{ command, cwd, assistant_message }`, with a 1.5 s timeout through the abort signal. `classify()` never throws; a non-`stop` stop reason, a timeout or a confidence below 0.6 means `unsure`. Answers are cached per exact command for the session.
 - **Keyword guess** without a classifier: dev servers, watchers, `--follow`, deploys, `docker compose up` and similar mean `unsure`; everything else runs as is.
-- **Safety net** (`src/intercept/safety-net.ts`): spawns the command with Pi's `shellPath` and `shellCommandPrefix` in its own process group and adopts the child as a hidden command monitor. Output goes to the monitor log and to a capture file. A status file holds `exit:<code>`, `bg` or `timeout`; the wait script polls it every 200 ms. A bash `timeout` shorter than the threshold is honoured: the command is killed and the script exits 124. If the bash call ends before a decision (abort), the command is stopped too.
+- **Safety net** (`src/intercept/safety-net.ts`): spawns the command with Pi's `shellPath` and `shellCommandPrefix` in its own process group and adopts the child as a hidden command monitor. Output goes to the monitor log and to a capture file. A status file holds `exit:<code>`, `bg` or `timeout`; the wait script polls it every 200 ms. A bash `timeout` shorter than the threshold is honoured: the command is killed and the script exits 124. A longer one bounds the backgrounded monitor. For known waits the bash `timeout` also becomes the monitor timeout, never below a timer's sleep plus 15 s. If the bash call ends before a decision (abort), the command is stopped too.
 - **Transcript**: Pi passes `tool_call` handlers a copy of the arguments and keeps the original tool call in the transcript, so the model and the user both see the command the model wrote; only what runs changes. Therefore the result text alone must say what happened: it names the monitor and says it runs in the background. `pi.registerToolRenderer` only adds a `→ monitor m3` line under the result while that monitor runs.
 - **Fail open**: any error in the interceptor leaves the command untouched and is logged to `<tmp>/pi-monitor/interceptor.log`.
 - The tool's `promptSnippet` and `promptGuidelines` tell the model it may run long commands in bash and that `monitor` gives explicit control. Pi adds these lines to the system prompt only while the tool is active, as a transcript delta. No `before_agent_start` prompt edits.
@@ -256,10 +272,10 @@ bash tool_call
 ## Lifecycle and state
 
 - No timers or processes start in the factory. Monitors start from the tool call.
-- `session_shutdown` aborts every monitor and kills its process group. Cleanup is idempotent.
-- Every start, end and resolved `"latest"` run is recorded with `pi.appendEntry("monitor-state", …)`. This data stays out of the model context.
+- `session_shutdown` writes an end entry with reason `shutdown` for every running monitor, then aborts them and kills their process groups. Cleanup is idempotent.
+- Every start, end and resolved `"latest"`/`"next"` run is recorded with `pi.appendEntry("monitor-state", …)`. This data stays out of the model context.
 - On `session_start` after a resume, pi-monitor reads the branch entries:
-  - It restarts `gh_run` and `gh_pr` watchers that had not finished, with the same id. They hold no state beyond the target.
+  - It restarts `gh_run` and `gh_pr` watchers that had not finished (or were stopped by a shutdown), with the same id. They hold no state beyond the target.
   - It marks other watchers (`command`, `file`, `url`, `pid`) as "ended with the session" in the UI.
 - Logs live in `os.tmpdir()/pi-monitor/<session>/<id>.log`. They are removed after 7 days.
 
