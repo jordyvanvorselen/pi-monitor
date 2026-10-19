@@ -50,6 +50,10 @@ export interface MonitorRecord extends Target {
 	handling: boolean;
 	/** Not shown in the UI yet, e.g. a bash command the safety net may still hand back. */
 	hidden: boolean;
+	/** Set when something stopped the monitor before its source ended. */
+	stopReason?: StopReason;
+	/** The end entry is already written (session shutdown). */
+	endPersisted?: boolean;
 	deliveredTokens: number;
 	log: MonitorLog;
 	controller: AbortController;
@@ -58,7 +62,17 @@ export interface MonitorRecord extends Target {
 export type MonitorEntry =
 	| { kind: "start"; id: string; spec: MonitorSpec; startedAt: number }
 	| { kind: "resolve"; id: string; target: string }
-	| { kind: "end"; id: string; status: MonitorStatus; summary: string; endedAt: number };
+	| { kind: "end"; id: string; status: MonitorStatus; summary: string; endedAt: number; reason?: StopReason };
+
+/** Why a monitor ended before its source did. */
+export type StopReason = "user" | "model" | "shutdown" | "timeout";
+
+const STOP_TEXT: Record<StopReason, string> = {
+	user: "stopped by the user",
+	model: "stopped by the model",
+	shutdown: "stopped at session shutdown",
+	timeout: "timed out",
+};
 
 export interface RegistryDeps {
 	delivery: Delivery;
@@ -173,18 +187,40 @@ export class Registry {
 		return record;
 	}
 
-	stop(id: string): boolean {
+	stop(id: string, reason: StopReason): boolean {
 		const record = this.monitors.get(id);
 		if (!record || record.status !== "running") return false;
+		record.stopReason ??= reason;
 		record.controller.abort();
 		return true;
 	}
 
 	/** Abort every running monitor. Safe to call more than once. */
-	stopAll(): number {
+	stopAll(reason: StopReason): number {
 		let count = 0;
-		for (const record of this.running()) if (this.stop(record.id)) count++;
+		for (const record of this.running()) if (this.stop(record.id, reason)) count++;
 		return count;
+	}
+
+	/**
+	 * Session shutdown: write the end entries now, while the session still accepts them, then stop.
+	 * Resume treats these ends as unfinished, so gh watchers restart.
+	 */
+	shutdown(): number {
+		const now = this.clock.now();
+		for (const record of this.running()) {
+			record.stopReason ??= "shutdown";
+			record.endPersisted = true;
+			this.deps.persist({
+				kind: "end",
+				id: record.id,
+				status: "stopped",
+				summary: `${STOP_TEXT.shutdown} after ${formatDuration(now - record.startedAt)}`,
+				endedAt: now,
+				reason: "shutdown",
+			});
+		}
+		return this.stopAll("shutdown");
 	}
 
 	/** Show a monitor from the session history that cannot run anymore. */
@@ -294,14 +330,7 @@ export class Registry {
 			this.deps.onChange();
 		};
 		const elapsedLimit = spec.timeoutMinutes * 60_000 - (this.clock.now() - record.startedAt);
-		let timedOut = false;
-		const timer = this.clock.setTimeout(
-			() => {
-				timedOut = true;
-				record.controller.abort();
-			},
-			Math.max(60_000, elapsedLimit),
-		);
+		const timer = this.clock.setTimeout(() => this.stop(record.id, "timeout"), Math.max(60_000, elapsedLimit));
 
 		let outcome: Outcome;
 		try {
@@ -338,9 +367,9 @@ export class Registry {
 		}
 		this.clock.clearTimeout(timer);
 		if (signal.aborted && outcome.status !== "success" && outcome.status !== "failure") {
-			outcome = timedOut
-				? { status: "timeout", summary: `no result after ${formatDuration(this.clock.now() - record.startedAt)}` }
-				: { status: "stopped", summary: outcome.summary || "stopped" };
+			const reason = record.stopReason ?? "user";
+			const summary = `${STOP_TEXT[reason]} after ${formatDuration(this.clock.now() - record.startedAt)}`;
+			outcome = { status: reason === "timeout" ? "timeout" : "stopped", summary };
 		}
 		this.finish(record, outcome);
 	}
@@ -355,13 +384,15 @@ export class Registry {
 		for (const line of outcome.detail ?? []) record.log.append(`  ${line}`);
 		record.log.flush();
 		this.deps.delivery.final(record, outcome);
-		this.deps.persist({
-			kind: "end",
-			id: record.id,
-			status: outcome.status,
-			summary: outcome.summary,
-			endedAt: record.endedAt,
-		});
+		if (!record.endPersisted)
+			this.deps.persist({
+				kind: "end",
+				id: record.id,
+				status: outcome.status,
+				summary: outcome.summary,
+				endedAt: record.endedAt,
+				...(record.stopReason ? { reason: record.stopReason } : {}),
+			});
 		this.deps.onEnd?.(record);
 		this.deps.onChange();
 	}

@@ -159,6 +159,21 @@ describe("dock card", () => {
 		assert.deepEqual(renderDock([{ ...done, endedAt: NOW - 11_000 }], options(), tagTheme), []);
 	});
 
+	it("shows why a monitor stopped in its collapsed row", () => {
+		const stopped = item({
+			id: "m2",
+			kind: "command",
+			status: "stopped",
+			description: "dev server",
+			endedAt: NOW - 3_000,
+			summary: "stopped by the user after 1m41s",
+		});
+		assert.match(
+			plain(renderDock([stopped], options(), plainTheme))[1]!,
+			/│ ■ dev server stopped by the user after 1m41s +│/,
+		);
+	});
+
 	it("does not flash with reducedMotion and shows no spinner", () => {
 		const done = item({ id: "m9", kind: "command", status: "failure", endedAt: NOW - 500, summary: "exited 1" });
 		const lines = renderDock([done, devServer], options({ reducedMotion: true }), tagTheme);

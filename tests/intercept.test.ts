@@ -257,7 +257,7 @@ describe("bash transcript renderer", () => {
 		const again = renderers.renderResult({ text: "x" }, {}, theme, { toolCallId, lastComponent: first });
 		assert.equal(again, first, "re-renders reuse the component");
 
-		internals().registry.stop("m1");
+		internals().registry.stop("m1", "user");
 		await until(() => internals().registry.get("m1")!.status !== "running");
 		const ended = renderers.renderResult({ text: "done" }, {}, theme, { toolCallId, lastComponent: first });
 		assert.deepEqual(ended.render(80), ["Running in background as m1"], "no tag once the monitor ended");
@@ -326,7 +326,7 @@ describe("result text tells the model what happened", () => {
 });
 
 describe("stopping from /monitors", () => {
-	it("tells the model on its next turn without waking it", async () => {
+	it("queues a non-triggering note that names the monitor and says the user stopped it", async () => {
 		let overlay: { handleInput(data: string): void } | undefined;
 		const custom = async (factory: (...args: unknown[]) => { handleInput(data: string): void }) => {
 			overlay = factory({ requestRender: () => {}, terminal: { rows: 40 } }, plainTheme, {}, () => {});
@@ -337,8 +337,12 @@ describe("stopping from /monitors", () => {
 		await h.commands["monitors"]!("", h.ctx);
 		overlay!.handleInput("s");
 		const sent = h.sent.at(-1)!;
-		assert.deepEqual(sent.options, { deliverAs: "nextTurn" });
-		assert.match(sent.message.content, /\[monitor m1 "server"\] stopped by the user\./);
+		assert.deepEqual(sent.options, { deliverAs: "nextTurn" }, "queued for the next turn, no triggerTurn");
+		assert.match(sent.message.content, /^\[monitor m1 "server"\] stopped by the user\.$/);
+		await until(() => h.entries.some((e) => e.data.kind === "end"));
+		const ended = h.entries.find((e) => e.data.kind === "end")!.data;
+		assert.equal(ended.reason, "user");
+		assert.match(String(ended.summary), /^stopped by the user after/);
 		await h.fire("session_shutdown", { reason: "quit" });
 	});
 });

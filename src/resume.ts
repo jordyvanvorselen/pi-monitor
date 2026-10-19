@@ -26,7 +26,8 @@ export function planResume(branch: readonly BranchEntry[], entryType: string): R
 		if (!data || typeof data !== "object" || typeof data.id !== "string") continue;
 		if (data.kind === "start" && data.spec) starts.set(data.id, { spec: data.spec, startedAt: data.startedAt });
 		if (data.kind === "resolve") resolved.set(data.id, data.target);
-		if (data.kind === "end") finished.add(data.id);
+		// A shutdown stop is not a real end: the watcher did not finish.
+		if (data.kind === "end" && data.reason !== "shutdown") finished.add(data.id);
 	}
 	const plan: ResumePlan = { restart: [], ended: [], ids: [...starts.keys()] };
 	for (const [id, { spec, startedAt }] of starts) {

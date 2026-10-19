@@ -49,6 +49,36 @@ describe("resume", () => {
 		assert.deepEqual(plan.ids, ["m1", "m2", "m3"]);
 	});
 
+	it("restarts gh watchers that were stopped by a session shutdown", () => {
+		const plan = planResume(
+			[
+				entry({ kind: "start", id: "m1", spec: ghSpec, startedAt: 1 }),
+				entry({
+					kind: "end",
+					id: "m1",
+					status: "stopped",
+					summary: "stopped at session shutdown after 5s",
+					endedAt: 2,
+					reason: "shutdown",
+				}),
+				entry({ kind: "start", id: "m2", spec: ghSpec, startedAt: 1 }),
+				entry({
+					kind: "end",
+					id: "m2",
+					status: "stopped",
+					summary: "stopped by the user after 5s",
+					endedAt: 2,
+					reason: "user",
+				}),
+			],
+			"monitor-state",
+		);
+		assert.deepEqual(
+			plan.restart.map((r) => r.id),
+			["m1"],
+		);
+	});
+
 	it("restarts a gh watcher on session_start, marks commands ended and continues the id sequence", async () => {
 		const calls: string[] = [];
 		const branch = [

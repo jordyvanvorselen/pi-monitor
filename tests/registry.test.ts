@@ -8,13 +8,17 @@ import { defaultRun } from "../src/exec.ts";
 import { MonitorLog } from "../src/log.ts";
 import { MonitorLimitError, Registry, startMonitor, type MonitorEntry } from "../src/registry.ts";
 import { buildSource } from "../src/sources/index.ts";
-import { until } from "./helpers.ts";
+import { FakeClock, until } from "./helpers.ts";
 
-function registry(maxConcurrent = 5) {
+function registry(maxConcurrent = 5, clock?: FakeClock) {
 	const dir = mkdtempSync(join(tmpdir(), "pi-monitor-registry-"));
 	const sent: OutgoingMessage[] = [];
 	const entries: MonitorEntry[] = [];
-	const delivery = new Delivery({ send: (message) => sent.push(message), isIdle: () => true });
+	const delivery = new Delivery({
+		send: (message) => sent.push(message),
+		isIdle: () => true,
+		...(clock ? { clock } : {}),
+	});
 	const reg = new Registry({
 		delivery,
 		buildSource,
@@ -24,6 +28,7 @@ function registry(maxConcurrent = 5) {
 		maxConcurrent: () => maxConcurrent,
 		persist: (entry) => entries.push(entry),
 		onChange: () => {},
+		...(clock ? { clock } : {}),
 	});
 	return { reg, sent, entries, dir };
 }
@@ -93,6 +98,59 @@ describe("startMonitor", () => {
 				}),
 			MonitorLimitError,
 		);
-		reg.stopAll();
+		reg.stopAll("shutdown");
+	});
+});
+
+describe("stop reasons", () => {
+	const spec = {
+		description: "server",
+		kind: "command" as const,
+		target: "sleep 30",
+		wake: "final" as const,
+		timeoutMinutes: 1,
+		cwd: "",
+		reportOutput: false,
+	};
+	const end = (entries: MonitorEntry[]) =>
+		entries.find((e) => e.kind === "end") as Extract<MonitorEntry, { kind: "end" }>;
+
+	for (const [reason, text] of [
+		["user", "stopped by the user"],
+		["model", "stopped by the model"],
+	] as const) {
+		it(`stores "${text}" in the summary and the end entry`, async () => {
+			const { reg, entries } = registry();
+			const { record } = startMonitor(reg, spec);
+			reg.stop(record.id, reason);
+			await until(() => record.status !== "running");
+			assert.equal(record.status, "stopped");
+			assert.match(record.summary!, new RegExp(`^${text} after \\d+s$`));
+			assert.equal(end(entries).reason, reason);
+			assert.match(end(entries).summary, new RegExp(`^${text}`));
+		});
+	}
+
+	it("ends a monitor that runs past its timeout as timed out", async () => {
+		const clock = new FakeClock();
+		const { reg, entries, sent } = registry(5, clock);
+		const { record } = startMonitor(reg, spec);
+		clock.advance(60_000);
+		await until(() => record.status !== "running");
+		assert.equal(record.status, "timeout");
+		assert.equal(record.summary, "timed out after 1m00s");
+		assert.equal(end(entries).reason, "timeout");
+		assert.match(sent[0]!.content, /timed out: timed out after 1m00s\nlog: /);
+	});
+
+	it("writes the end entry at session shutdown right away and keeps it out of resume's finished list", async () => {
+		const { reg, entries } = registry();
+		const { record } = startMonitor(reg, spec);
+		reg.shutdown();
+		const written = end(entries);
+		assert.deepEqual([written.status, written.reason], ["stopped", "shutdown"]);
+		assert.match(written.summary, /^stopped at session shutdown after/);
+		await until(() => record.status !== "running");
+		assert.equal(entries.filter((e) => e.kind === "end").length, 1, "no second end entry");
 	});
 });

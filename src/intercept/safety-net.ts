@@ -108,7 +108,7 @@ export class SafetyNet {
 			if (record.status !== "running") return;
 			if (timesOut) {
 				if (decide("timeout")) {
-					registry.stop(id);
+					registry.stop(id, "timeout");
 					this.discardWhenDone(id);
 				}
 				return;
@@ -139,7 +139,8 @@ export class SafetyNet {
 		if (entry.decided) return;
 		entry.decided = true;
 		clearTimeout(entry.timer);
-		this.deps.registry.stop(entry.id);
+		// The wait script died first, usually because the user aborted the bash call.
+		this.deps.registry.stop(entry.id, "user");
 		this.discardWhenDone(entry.id);
 	}
 

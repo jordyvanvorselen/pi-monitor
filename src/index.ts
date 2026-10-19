@@ -150,10 +150,10 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 			ctxRef = ctx;
 			const id = params.id.trim();
 			if (id === "all") {
-				const count = registry.stopAll();
+				const count = registry.stopAll("model");
 				return { content: [{ type: "text", text: `Stopped ${count} monitor${count === 1 ? "" : "s"}.` }], details: {} };
 			}
-			if (registry.stop(id)) return { content: [{ type: "text", text: `Stopped ${id}.` }], details: { id } };
+			if (registry.stop(id, "model")) return { content: [{ type: "text", text: `Stopped ${id}.` }], details: { id } };
 			const running = registry.running().map((m) => m.id);
 			throw new Error(`No running monitor ${id}. Running: ${running.length ? running.join(", ") : "none"}.`);
 		},
@@ -197,7 +197,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 							items: () => registry.visible(),
 							stop: (id) => {
 								const record = registry.get(id);
-								if (!record || !registry.stop(id)) return;
+								if (!record || !registry.stop(id, "user")) return;
 								// Tell the model without waking it: it reads this with its next turn.
 								pi.sendMessage(
 									{
@@ -279,8 +279,8 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 	});
 
 	pi.on("session_shutdown", async () => {
+		registry.shutdown();
 		shutDown = true;
-		registry.stopAll();
 		delivery.dispose();
 		safetyNet.dispose();
 		interceptor.reset();
