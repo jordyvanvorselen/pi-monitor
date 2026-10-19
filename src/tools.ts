@@ -20,8 +20,15 @@ export const MonitorParams = Type.Object({
 		}),
 	),
 	gh_run: Type.Optional(
-		Type.String({ description: 'GitHub Actions run id, run URL, or "latest" for the current branch.' }),
+		Type.String({
+			description:
+				'GitHub Actions run id, run URL, "latest" (newest run of HEAD) or "next" (waits for the next run on the branch; use it when nothing runs yet).',
+		}),
 	),
+	branch: Type.Optional(
+		Type.String({ description: 'gh_run "latest"/"next": branch to look at. Default: current branch.' }),
+	),
+	workflow: Type.Optional(Type.String({ description: 'gh_run "latest"/"next": only this workflow (name or file).' })),
 	gh_pr: Type.Optional(Type.String({ description: "Pull request number or URL. Watches all its checks." })),
 	file: Type.Optional(Type.String({ description: "File to tail. Use with match." })),
 	url: Type.Optional(Type.String({ description: "Wait until this URL answers 2xx." })),
@@ -78,5 +85,10 @@ export function specFromInput(input: MonitorInput, defaultTimeoutMinutes: number
 		reportOutput: kind === "command" && wake === "final",
 	};
 	if (input.match !== undefined) spec.match = input.match;
+	if (input.branch !== undefined || input.workflow !== undefined) {
+		if (kind !== "gh_run") throw new Error("branch and workflow only apply to gh_run.");
+		if (input.branch) spec.branch = input.branch.trim();
+		if (input.workflow) spec.workflow = input.workflow.trim();
+	}
 	return spec;
 }

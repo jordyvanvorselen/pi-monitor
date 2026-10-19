@@ -72,6 +72,28 @@ describe("extension wiring", () => {
 		await assert.rejects(h.call("monitor", { description: "x", command: "true", match: "(" }), /not a valid regex/);
 	});
 
+	it('mentions gh_run "next" in the tool schema so the model can wait for CI that has not started', () => {
+		const h = harness();
+		const schema = JSON.stringify((h.tools.monitor as unknown as { parameters: unknown }).parameters);
+		assert.match(schema, /\\"next\\" \(waits for the next run on the branch/);
+	});
+
+	it("stores branch and workflow for gh_run and rejects them for other sources", async () => {
+		const h = harness({
+			overrides: { run: async () => ({ stdout: "[]", stderr: "", code: 0 }) },
+		});
+		await h.fire("session_start", { reason: "startup" });
+		const started = await h.call("monitor", { description: "CI", gh_run: "next", branch: "main", workflow: "ci.yml" });
+		assert.match(started.content[0]!.text, /^Started m1 "CI" \(next gh run on main\)/);
+		const spec = h.entries.find((e) => e.data.kind === "start")!.data.spec as Record<string, unknown>;
+		assert.deepEqual([spec.target, spec.branch, spec.workflow], ["next", "main", "ci.yml"]);
+		await assert.rejects(
+			h.call("monitor", { description: "x", command: "true", branch: "main" }),
+			/only apply to gh_run/,
+		);
+		await h.fire("session_shutdown", { reason: "quit" });
+	});
+
 	it("accepts a numeric gh_run id and a string pid", async () => {
 		const h = harness();
 		const prepare = h.tools.monitor!.prepareArguments!;
