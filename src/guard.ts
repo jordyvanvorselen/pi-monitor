@@ -1,10 +1,13 @@
+// Minimal stop-gap. A smarter bash interceptor will replace this module; keep
+// `blockingWaitReason` as its only export so the swap stays a one-line change in index.ts.
+
 /** Longest `sleep` that is still fine in bash. */
-export const MAX_SLEEP_SECONDS = 20;
+const MAX_SLEEP_SECONDS = 20;
 
 const UNIT_SECONDS: Record<string, number> = { "": 1, s: 1, m: 60, h: 3600, d: 86400 };
 
 /** Total seconds of the longest `sleep` in a command line, e.g. `sleep 1m 30` → 90. */
-export function longestSleep(command: string): number {
+function longestSleep(command: string): number {
 	let longest = 0;
 	for (const match of command.matchAll(/(?:^|[\s;&|(`])sleep((?:\s+\d+(?:\.\d+)?[smhd]?)+)(?=\s*(?:$|[;&|)`\n]))/g)) {
 		let total = 0;

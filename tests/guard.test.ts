@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { blockingWaitReason, longestSleep } from "../src/guard.ts";
+import { blockingWaitReason } from "../src/guard.ts";
 import { harness } from "./harness.ts";
 
 describe("blocking-wait guard", () => {
@@ -16,18 +16,17 @@ describe("blocking-wait guard", () => {
 	});
 
 	it("blocks sleep over 20 seconds, with units and sums", () => {
-		assert.equal(longestSleep("sleep 60 && gh run view 1"), 60);
-		assert.equal(longestSleep("sleep 1m 30"), 90);
-		assert.equal(longestSleep("for i in 1 2; do sleep 5; done"), 5);
-		assert.equal(longestSleep("sleep 0.5h"), 1800);
+		assert.match(blockingWaitReason("sleep 1m 30")!, /sleeping 90s/);
+		assert.match(blockingWaitReason("sleep 0.5h")!, /sleeping 1800s/);
+		assert.equal(blockingWaitReason("for i in 1 2; do sleep 5; done"), undefined);
 		assert.match(blockingWaitReason("sleep 60 && gh run view 123")!, /sleeping 60s/);
 		assert.equal(blockingWaitReason("sleep 20"), undefined);
 		assert.equal(blockingWaitReason("sleep 2; curl localhost"), undefined);
 	});
 
 	it("ignores words that only contain sleep", () => {
-		assert.equal(longestSleep("npm run sleepy-test 100"), 0);
-		assert.equal(longestSleep("echo nosleep 30"), 0);
+		assert.equal(blockingWaitReason("npm run sleepy-test 100"), undefined);
+		assert.equal(blockingWaitReason("echo nosleep 30"), undefined);
 	});
 
 	it("keeps the reason short, about 50 tokens", () => {
