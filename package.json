@@ -40,7 +40,8 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.87.0",
@@ -51,6 +52,7 @@
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.9.9",
     "semver": "^7.8.5",
+    "typebox": "^1.4.2",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.71.0"
   },
