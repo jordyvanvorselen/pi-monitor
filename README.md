@@ -123,7 +123,7 @@ The model does not have to use `monitor` at all. pi-monitor looks at every `bash
 - **Everything else** is a suspect. If you have a [classifier model](https://github.com/earendil-works/pi-coding-agent/blob/main/packages/coding-agent/docs/models.md#use-classifier-models) configured, pi-monitor asks it whether the command finishes on its own. Without one it guesses from keywords such as `dev`, `serve`, `watch`, `deploy`, `--follow` or `docker compose up`. A clear "short" runs as usual. A clear "background" becomes a monitor right away.
 - **Unsure commands** go to the safety net. pi-monitor runs the command itself and bash waits for it. If it ends within 30 seconds, the model gets its output and exit code as usual. If it is still running, the model gets the output so far and `Still running after 30s. Moved to background as m4 (…). You will be notified when it ends.` The command keeps running as a monitor. A `timeout` on the bash call is respected.
 
-In the transcript, rewritten calls show the original command with `→ monitor m3`.
+Pi keeps the original tool call, so the transcript and the model's history show the command as the model wrote it. The result says what happened, and while the monitor runs it carries a `→ monitor m3` tag.
 
 Things to know:
 

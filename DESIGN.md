@@ -249,7 +249,7 @@ bash tool_call
 - **Classifier**: `ctx.modelRegistry.getAvailableOfType("classifier")`, the pinned `classifier` setting or the first one. One choice question (`background`, `short`, `unsure`) about `{ command, cwd, assistant_message }`, with a 1.5 s timeout through the abort signal. `classify()` never throws; a non-`stop` stop reason, a timeout or a confidence below 0.6 means `unsure`. Answers are cached per exact command for the session.
 - **Keyword guess** without a classifier: dev servers, watchers, `--follow`, deploys, `docker compose up` and similar mean `unsure`; everything else runs as is.
 - **Safety net** (`src/intercept/safety-net.ts`): spawns the command with Pi's `shellPath` and `shellCommandPrefix` in its own process group and adopts the child as a hidden command monitor. Output goes to the monitor log and to a capture file. A status file holds `exit:<code>`, `bg` or `timeout`; the wait script polls it every 200 ms. A bash `timeout` shorter than the threshold is honoured: the command is killed and the script exits 124. If the bash call ends before a decision (abort), the command is stopped too.
-- **Transcript**: `pi.registerToolRenderer` shows rewritten calls with the original command and `→ monitor m3`. The rewritten command carries a `# pi-monitor: {…}` marker with the original, so this also works after a restart.
+- **Transcript**: Pi passes `tool_call` handlers a copy of the arguments and keeps the original tool call in the transcript, so the model and the user both see the command the model wrote; only what runs changes. Therefore the result text alone must say what happened: it names the monitor and says it runs in the background. `pi.registerToolRenderer` only adds a `→ monitor m3` line under the result while that monitor runs.
 - **Fail open**: any error in the interceptor leaves the command untouched and is logged to `<tmp>/pi-monitor/interceptor.log`.
 - The tool's `promptSnippet` and `promptGuidelines` tell the model it may run long commands in bash and that `monitor` gives explicit control. Pi adds these lines to the system prompt only while the tool is active, as a transcript delta. No `before_agent_start` prompt edits.
 
@@ -302,7 +302,7 @@ src/
     patterns.ts     known blocking waits
     triage.ts       skip list, keyword guess, classifier
     safety-net.ts   run unsure commands, hand back or move to the background
-    rewrite.ts      printf and wait scripts, transcript marker
+    rewrite.ts      printf and wait scripts
   settings.ts
   sources/
     types.ts index.ts command.ts gh.ts gh-run.ts gh-pr.ts file.ts url.ts pid.ts
@@ -313,7 +313,7 @@ src/
     controller.ts   widget, status, title, notifications, timer
     overlay.ts      /monitors
     renderer.ts     transcript messages
-    bash-renderer.ts rewritten bash calls in the transcript
+    bash-renderer.ts "→ monitor m3" under intercepted bash results
 tests/
   format, delivery (fake clock), gh (JSON fixtures), command (real processes, group kill),
   sources (file, url, pid), patterns, triage (fake classifier), safety net (real processes), intercept, registry, resume, dock (several widths, stub theme), ui, extension
