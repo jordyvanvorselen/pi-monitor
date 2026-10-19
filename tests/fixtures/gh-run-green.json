@@ -1,0 +1,59 @@
+[
+  {
+    "name": "CI",
+    "workflowName": "CI",
+    "displayTitle": "Add monitor",
+    "number": 42,
+    "url": "https://github.com/acme/app/actions/runs/1001",
+    "workflowDatabaseId": 77,
+    "createdAt": "2024-05-01T12:00:00Z",
+    "startedAt": "2024-05-01T12:00:00Z",
+    "updatedAt": "2024-05-01T12:00:00Z",
+    "status": "in_progress",
+    "conclusion": "",
+    "jobs": [
+      {
+        "databaseId": 1,
+        "name": "build",
+        "status": "in_progress",
+        "conclusion": "",
+        "startedAt": "2024-05-01T12:00:05Z",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/1",
+        "steps": [
+          {
+            "number": 1,
+            "name": "Compile",
+            "status": "in_progress",
+            "conclusion": ""
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "CI",
+    "workflowName": "CI",
+    "displayTitle": "Add monitor",
+    "number": 42,
+    "url": "https://github.com/acme/app/actions/runs/1001",
+    "workflowDatabaseId": 77,
+    "createdAt": "2024-05-01T12:00:00Z",
+    "startedAt": "2024-05-01T12:00:00Z",
+    "updatedAt": "2024-05-01T12:06:02Z",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "databaseId": 1,
+        "name": "build",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2024-05-01T12:00:05Z",
+        "completedAt": "2024-05-01T12:06:00Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/1",
+        "steps": []
+      }
+    ]
+  }
+]

@@ -1,0 +1,4 @@
+test	Run unit tests	2024-05-01T12:03:58.1000000Z [36m> pi-monitor@0.1.0 test[0m
+test	Run unit tests	2024-05-01T12:03:59.1000000Z [31m✗ extension.test.ts > loads rules lazily[0m
+test	Run unit tests	2024-05-01T12:03:59.2000000Z     Expected 2, received 3 (tests/extension.test.ts:88)
+test	Run unit tests	2024-05-01T12:04:00.0000000Z ##[error]Process completed with exit code 1.

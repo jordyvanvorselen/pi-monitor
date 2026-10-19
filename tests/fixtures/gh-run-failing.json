@@ -1,0 +1,215 @@
+[
+  {
+    "name": "CI",
+    "workflowName": "CI",
+    "displayTitle": "Add monitor",
+    "number": 42,
+    "url": "https://github.com/acme/app/actions/runs/1001",
+    "workflowDatabaseId": 77,
+    "createdAt": "2024-05-01T12:00:00Z",
+    "startedAt": "2024-05-01T12:00:00Z",
+    "updatedAt": "2024-05-01T12:00:00Z",
+    "status": "queued",
+    "conclusion": "",
+    "jobs": [
+      {
+        "databaseId": 1,
+        "name": "build",
+        "status": "queued",
+        "conclusion": "",
+        "startedAt": "0001-01-01T00:00:00Z",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/1",
+        "steps": []
+      }
+    ]
+  },
+  {
+    "name": "CI",
+    "workflowName": "CI",
+    "displayTitle": "Add monitor",
+    "number": 42,
+    "url": "https://github.com/acme/app/actions/runs/1001",
+    "workflowDatabaseId": 77,
+    "createdAt": "2024-05-01T12:00:00Z",
+    "startedAt": "2024-05-01T12:00:00Z",
+    "updatedAt": "2024-05-01T12:00:00Z",
+    "status": "in_progress",
+    "conclusion": "",
+    "jobs": [
+      {
+        "databaseId": 1,
+        "name": "build",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2024-05-01T12:00:05Z",
+        "completedAt": "2024-05-01T12:01:07Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/1",
+        "steps": [
+          {
+            "number": 1,
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "databaseId": 2,
+        "name": "test",
+        "status": "in_progress",
+        "conclusion": "",
+        "startedAt": "2024-05-01T12:01:10Z",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/2",
+        "steps": [
+          {
+            "number": 1,
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "number": 2,
+            "name": "Run unit tests",
+            "status": "in_progress",
+            "conclusion": ""
+          }
+        ]
+      },
+      {
+        "databaseId": 3,
+        "name": "lint",
+        "status": "queued",
+        "conclusion": "",
+        "startedAt": "0001-01-01T00:00:00Z",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/3",
+        "steps": []
+      }
+    ]
+  },
+  {
+    "name": "CI",
+    "workflowName": "CI",
+    "displayTitle": "Add monitor",
+    "number": 42,
+    "url": "https://github.com/acme/app/actions/runs/1001",
+    "workflowDatabaseId": 77,
+    "createdAt": "2024-05-01T12:00:00Z",
+    "startedAt": "2024-05-01T12:00:00Z",
+    "updatedAt": "2024-05-01T12:00:00Z",
+    "status": "in_progress",
+    "conclusion": "",
+    "jobs": [
+      {
+        "databaseId": 1,
+        "name": "build",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2024-05-01T12:00:05Z",
+        "completedAt": "2024-05-01T12:01:07Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/1",
+        "steps": []
+      },
+      {
+        "databaseId": 2,
+        "name": "test",
+        "status": "completed",
+        "conclusion": "failure",
+        "startedAt": "2024-05-01T12:01:10Z",
+        "completedAt": "2024-05-01T12:04:00Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/2",
+        "steps": [
+          {
+            "number": 1,
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "number": 2,
+            "name": "Run unit tests",
+            "status": "completed",
+            "conclusion": "failure"
+          },
+          {
+            "number": 3,
+            "name": "Post",
+            "status": "completed",
+            "conclusion": "skipped"
+          }
+        ]
+      },
+      {
+        "databaseId": 3,
+        "name": "lint",
+        "status": "in_progress",
+        "conclusion": "",
+        "startedAt": "2024-05-01T12:04:02Z",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/3",
+        "steps": [
+          {
+            "number": 1,
+            "name": "Run eslint",
+            "status": "in_progress",
+            "conclusion": ""
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "CI",
+    "workflowName": "CI",
+    "displayTitle": "Add monitor",
+    "number": 42,
+    "url": "https://github.com/acme/app/actions/runs/1001",
+    "workflowDatabaseId": 77,
+    "createdAt": "2024-05-01T12:00:00Z",
+    "startedAt": "2024-05-01T12:00:00Z",
+    "updatedAt": "2024-05-01T12:06:12Z",
+    "status": "completed",
+    "conclusion": "failure",
+    "jobs": [
+      {
+        "databaseId": 1,
+        "name": "build",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2024-05-01T12:00:05Z",
+        "completedAt": "2024-05-01T12:01:07Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/1",
+        "steps": []
+      },
+      {
+        "databaseId": 2,
+        "name": "test",
+        "status": "completed",
+        "conclusion": "failure",
+        "startedAt": "2024-05-01T12:01:10Z",
+        "completedAt": "2024-05-01T12:04:00Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/2",
+        "steps": [
+          {
+            "number": 2,
+            "name": "Run unit tests",
+            "status": "completed",
+            "conclusion": "failure"
+          }
+        ]
+      },
+      {
+        "databaseId": 3,
+        "name": "lint",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2024-05-01T12:04:02Z",
+        "completedAt": "2024-05-01T12:06:10Z",
+        "url": "https://github.com/acme/app/actions/runs/1001/job/3",
+        "steps": []
+      }
+    ]
+  }
+]

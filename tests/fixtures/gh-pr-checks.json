@@ -1,0 +1,62 @@
+[
+  [
+    {
+      "name": "build",
+      "state": "QUEUED",
+      "bucket": "pending",
+      "link": "https://github.com/acme/app/actions/runs/1001/job/1",
+      "startedAt": "0001-01-01T00:00:00Z",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "workflow": "CI"
+    },
+    {
+      "name": "vercel",
+      "state": "PENDING",
+      "bucket": "pending",
+      "link": "https://vercel.com/x",
+      "startedAt": "0001-01-01T00:00:00Z",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "workflow": ""
+    }
+  ],
+  [
+    {
+      "name": "build",
+      "state": "IN_PROGRESS",
+      "bucket": "pending",
+      "link": "https://github.com/acme/app/actions/runs/1001/job/1",
+      "startedAt": "2024-05-01T12:00:05Z",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "workflow": "CI"
+    },
+    {
+      "name": "vercel",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "link": "https://vercel.com/x",
+      "startedAt": "2024-05-01T12:00:01Z",
+      "completedAt": "2024-05-01T12:01:00Z",
+      "workflow": ""
+    }
+  ],
+  [
+    {
+      "name": "build",
+      "state": "FAILURE",
+      "bucket": "fail",
+      "link": "https://github.com/acme/app/actions/runs/1001/job/1",
+      "startedAt": "2024-05-01T12:00:05Z",
+      "completedAt": "2024-05-01T12:03:00Z",
+      "workflow": "CI"
+    },
+    {
+      "name": "vercel",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "link": "https://vercel.com/x",
+      "startedAt": "2024-05-01T12:00:01Z",
+      "completedAt": "2024-05-01T12:01:00Z",
+      "workflow": ""
+    }
+  ]
+]
