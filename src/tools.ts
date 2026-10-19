@@ -77,13 +77,3 @@ export function specFromInput(input: MonitorInput, defaultTimeoutMinutes: number
 	if (input.match !== undefined) spec.match = input.match;
 	return spec;
 }
-
-export function startedText(id: string, description: string, label: string, wake: WakeLevel): string {
-	const then =
-		wake === "final"
-			? "You will be notified when it ends."
-			: wake === "events"
-				? "You will be notified of new events."
-				: "It shows in the UI only.";
-	return `Started ${id} "${description}" (${label}). ${then} Continue with other work.`;
-}

@@ -6,12 +6,12 @@ import { formatDuration } from "./format.ts";
 import { blockingWaitReason } from "./guard.ts";
 import { cleanupOldLogs, MonitorLog, sessionLogDir } from "./log.ts";
 import { desktopNotification, openExternal } from "./notify.ts";
-import { Registry, type MonitorEntry } from "./registry.ts";
+import { Registry, startMonitor, type MonitorEntry } from "./registry.ts";
 import { planResume } from "./resume.ts";
 import { loadSettings, type Settings } from "./settings.ts";
 import { buildSource } from "./sources/index.ts";
 import type { Run } from "./sources/types.ts";
-import { MonitorParams, prepareMonitorArgs, specFromInput, startedText, StopParams } from "./tools.ts";
+import { MonitorParams, prepareMonitorArgs, specFromInput, StopParams } from "./tools.ts";
 import { UiController } from "./ui/controller.ts";
 import { MonitorsOverlay } from "./ui/overlay.ts";
 import { renderMonitorMessage } from "./ui/renderer.ts";
@@ -92,9 +92,9 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			ctxRef = ctx;
 			const spec = specFromInput(params, settings.defaultTimeoutMinutes);
-			const record = registry.start(spec);
+			const { text, record } = startMonitor(registry, spec);
 			return {
-				content: [{ type: "text", text: startedText(record.id, record.description, record.label, record.wake) }],
+				content: [{ type: "text", text }],
 				details: { id: record.id, kind: record.kind, wake: record.wake, logPath: record.logPath },
 			};
 		},

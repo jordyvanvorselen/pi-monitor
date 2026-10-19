@@ -15,6 +15,8 @@ export interface MonitorSpec {
 	match?: string;
 	wake: WakeLevel;
 	timeoutMinutes: number;
+	/** Working directory. Defaults to the session cwd. */
+	cwd?: string;
 }
 
 /** `ended` = a command watcher that did not survive a session restart. */
@@ -269,7 +271,7 @@ export class Registry {
 		try {
 			outcome = await source.start({
 				signal,
-				cwd: this.deps.cwd(),
+				cwd: spec.cwd ?? this.deps.cwd(),
 				run: this.deps.run,
 				now: () => this.clock.now(),
 				sleep: (ms) => abortableSleep(ms, signal),
@@ -327,4 +329,31 @@ export class Registry {
 		this.deps.onEnd?.(record);
 		this.deps.onChange();
 	}
+}
+
+export function startedText(id: string, description: string, label: string, wake: WakeLevel): string {
+	const then =
+		wake === "final"
+			? "You will be notified when it ends."
+			: wake === "events"
+				? "You will be notified of new events."
+				: "It shows in the UI only.";
+	return `Started ${id} "${description}" (${label}). ${then} Continue with other work.`;
+}
+
+export interface Started {
+	id: string;
+	/** Model-facing confirmation, e.g. `Started m3 "CI for PR #42" (gh run 123456). …`. */
+	text: string;
+	record: MonitorRecord;
+}
+
+/**
+ * Start a monitor from code. The `monitor` tool uses this, and so can other modules
+ * (for example a bash interceptor that turns a blocking wait into a monitor).
+ * Throws `MonitorLimitError` or a source error with a message meant for the model.
+ */
+export function startMonitor(registry: Registry, spec: MonitorSpec): Started {
+	const record = registry.start(spec);
+	return { id: record.id, text: startedText(record.id, record.description, record.label, record.wake), record };
 }
