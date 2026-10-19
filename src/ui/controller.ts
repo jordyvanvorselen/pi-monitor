@@ -1,13 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { MonitorRecord, Registry } from "../registry.ts";
-import type { DockMode, Settings } from "../settings.ts";
+import type { Settings } from "../settings.ts";
 import { DockComponent, isVisible, renderDock } from "./dock.ts";
 import type { Paint } from "./glyphs.ts";
 import { monitorTitle, piTitle } from "./title.ts";
 
 export const WIDGET_KEY = "monitor";
-export const STATUS_KEY = "monitor";
 
 /** Spinner speed while something runs. */
 export const SPIN_MS = 120;
@@ -18,8 +17,6 @@ export const FADE_MS = 250;
 /** Changes closer together than this wait for the next tick. */
 const BURST_MS = 100;
 
-const NEXT_MODE: Record<DockMode, DockMode> = { card: "line", line: "hidden", hidden: "card" };
-
 export interface ControllerDeps {
 	registry: Registry;
 	settings(): Settings;
@@ -29,21 +26,18 @@ export interface ControllerDeps {
 }
 
 /**
- * Owns everything the user sees outside the transcript: dock widget, footer status, terminal title,
+ * Owns everything the user sees outside the transcript: dock widget, terminal title,
  * desktop notifications and the animation timer. Does nothing outside TUI mode.
  */
 export class UiController {
 	private ctx: ExtensionContext | undefined;
 	private readonly deps: ControllerDeps;
-	private mode: DockMode = "card";
-	private streaming = false;
 	private frame = 0;
 	private timer: NodeJS.Timeout | undefined;
 	private timerMs: number | undefined;
 	private dock: DockComponent | undefined;
 	private tui: TUI | undefined;
 	private widgetShown = false;
-	private status: string | undefined;
 	private title: string | undefined;
 	private lastRefresh = 0;
 	private readonly listeners = new Set<() => void>();
@@ -56,18 +50,16 @@ export class UiController {
 	attach(ctx: ExtensionContext): void {
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
 		this.ctx = ctx;
-		this.mode = this.deps.settings().dock;
 		this.changed(true);
 	}
 
-	/** Remove widget, status and title and stop all timers. Safe to call more than once. */
+	/** Remove widget and title and stop all timers. Safe to call more than once. */
 	detach(): void {
 		this.stopTimer();
 		const ctx = this.ctx;
 		if (ctx) {
 			try {
 				if (this.widgetShown) ctx.ui.setWidget(WIDGET_KEY, undefined);
-				if (this.status !== undefined) ctx.ui.setStatus(STATUS_KEY, undefined);
 				if (this.title !== undefined) ctx.ui.setTitle(piTitle(ctx.cwd, this.deps.sessionName()));
 			} catch {
 				// the UI may already be gone during shutdown
@@ -75,7 +67,6 @@ export class UiController {
 		}
 		this.ctx = undefined;
 		this.widgetShown = false;
-		this.status = undefined;
 		this.title = undefined;
 		this.dock = undefined;
 		this.tui = undefined;
@@ -92,19 +83,6 @@ export class UiController {
 
 	currentFrame(): number {
 		return this.frame;
-	}
-
-	setStreaming(streaming: boolean): void {
-		if (this.streaming === streaming) return;
-		this.streaming = streaming;
-		this.changed(true);
-	}
-
-	/** card → line → hidden → card. Returns the new mode. */
-	cycleMode(): DockMode {
-		this.mode = NEXT_MODE[this.mode];
-		this.changed(true);
-		return this.mode;
 	}
 
 	/** Subscribe to every redraw, for the overlay. Returns an unsubscribe function. */
@@ -144,8 +122,6 @@ export class UiController {
 				width,
 				now: this.deps.now(),
 				frame: this.frame,
-				mode: this.mode === "line" ? "line" : "card",
-				streaming: this.streaming,
 				savedTokens: this.deps.registry.savedTokens(),
 				shortcut: settings.shortcut,
 				reducedMotion: settings.reducedMotion,
@@ -162,7 +138,7 @@ export class UiController {
 		const records = this.deps.registry.visible();
 		const visible = records.some((r) => isVisible(r, now));
 
-		if (this.mode === "hidden" || !visible) {
+		if (!visible) {
 			if (this.widgetShown) ctx.ui.setWidget(WIDGET_KEY, undefined);
 			this.widgetShown = false;
 			this.dock = undefined;
@@ -176,16 +152,6 @@ export class UiController {
 		} else {
 			this.dock?.invalidate();
 			this.tui?.requestRender();
-		}
-
-		const running = this.deps.registry.visible().filter((r) => r.status === "running").length;
-		const status =
-			this.mode === "hidden" && running > 0
-				? ctx.ui.theme.fg("accent", "◉") + ctx.ui.theme.fg("muted", ` ${running} monitor${running === 1 ? "" : "s"}`)
-				: undefined;
-		if (status !== this.status) {
-			ctx.ui.setStatus(STATUS_KEY, status);
-			this.status = status;
 		}
 
 		const title = monitorTitle(records, now, this.frame, this.deps.settings().reducedMotion);

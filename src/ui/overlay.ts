@@ -156,8 +156,6 @@ export class MonitorsOverlay implements Component {
 			width: inner - 2,
 			now,
 			frame: this.deps.frame(),
-			mode: "card",
-			streaming: false,
 			savedTokens: this.deps.savedTokens(),
 			shortcut: "",
 			reducedMotion: this.deps.reducedMotion(),

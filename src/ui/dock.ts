@@ -25,9 +25,6 @@ export interface DockOptions {
 	width: number;
 	now: number;
 	frame: number;
-	mode: "card" | "line";
-	/** While the agent streams the dock folds to one line. */
-	streaming: boolean;
 	savedTokens: number;
 	shortcut: string;
 	reducedMotion: boolean;
@@ -252,7 +249,8 @@ export function renderDock(all: readonly DockItem[], options: DockOptions, paint
 	const items = byImportance(all.filter((i) => isVisible(i, options.now)));
 	if (items.length === 0) return [];
 	const { width } = options;
-	if (options.mode === "line" || options.streaming || width < 24) return [renderLine(items, options, paint)];
+	// Too narrow for a card: one line. The dock never folds otherwise.
+	if (width < 24) return [renderLine(items, options, paint)];
 
 	const inner = width - 4;
 	const shown = items.length > MAX_ROWS ? items.slice(0, MAX_ROWS - 1) : items;

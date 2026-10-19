@@ -166,16 +166,6 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 
 	pi.registerToolRenderer(bashRenderer((toolCallId) => interceptor.monitorFor(toolCallId)));
 
-	pi.registerShortcut(settings.shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
-		description: "Monitor dock: card, one line, hidden",
-		handler: (ctx) => {
-			if (ctx.mode !== "tui") return;
-			const mode = ui.cycleMode();
-			if (mode === "hidden" && registry.running().length > 0)
-				ctx.ui.notify("Monitor dock hidden. The footer still shows running monitors.", "info");
-		},
-	});
-
 	pi.registerCommand("monitors", {
 		description: "Monitors: timeline, live log, open in browser, stop",
 		handler: async (_args, ctx) => {
@@ -256,8 +246,6 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 			if (!registry.get(id)) registry.addEnded(spec, id, startedAt, "ended with the session");
 	});
 
-	pi.on("agent_start", async () => ui.setStreaming(true));
-
 	pi.on("message_start", async (event) => {
 		const message = event.message as { role?: string; customType?: string; details?: { id?: unknown } };
 		if (message.role === "custom" && message.customType === CUSTOM_TYPE && typeof message.details?.id === "string")
@@ -265,7 +253,6 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 	});
 
 	pi.on("agent_settled", async () => {
-		ui.setStreaming(false);
 		registry.clearHandling();
 	});
 

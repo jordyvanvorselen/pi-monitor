@@ -56,8 +56,6 @@ function options(partial: Partial<DockOptions> = {}): DockOptions {
 		width: 120,
 		now: NOW,
 		frame: 2,
-		mode: "card",
-		streaming: false,
 		savedTokens: 6_200,
 		shortcut: "ctrl+shift+m",
 		reducedMotion: false,
@@ -197,15 +195,15 @@ describe("dock card", () => {
 	});
 });
 
-describe("dock line mode", () => {
-	it("folds to one line while the agent streams", () => {
+describe("dock never folds", () => {
+	it("shows the full card for any number of monitors at normal widths", () => {
 		const failed = item({ id: "e2e", kind: "command", status: "failure", endedAt: NOW - 2_000, summary: "exit 1" });
-		const lines = plain(renderDock([ci, failed], options({ streaming: true }), plainTheme));
-		assert.deepEqual(lines, ["◉ 2 monitors · e2e ✗ · CI #42 2/5"]);
+		for (const width of [40, 80, 120]) assert.equal(renderDock([ci, failed], options({ width }), plainTheme).length, 4);
 	});
 
-	it("uses the line mode when chosen", () => {
-		assert.equal(renderDock([ci], options({ mode: "line" }), plainTheme).length, 1);
+	it("uses one line only when the terminal is too narrow for a card", () => {
+		const failed = item({ id: "e2e", kind: "command", status: "failure", endedAt: NOW - 2_000, summary: "exit 1" });
+		assert.deepEqual(plain(renderDock([ci, failed], options({ width: 23 }), plainTheme)), ["◉ 2 monitors · e2e ✗ ·…"]);
 	});
 });
 

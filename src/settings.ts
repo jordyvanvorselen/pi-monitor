@@ -2,8 +2,6 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type DockMode = "card" | "line" | "hidden";
-
 export interface Settings {
 	/** Monitors that may run at the same time. */
 	maxConcurrent: number;
@@ -16,9 +14,7 @@ export interface Settings {
 	desktopNotifications: boolean;
 	/** No spinner and no flash. Clocks still tick once a second. */
 	reducedMotion: boolean;
-	/** How the dock starts. The shortcut cycles card → line → hidden. */
-	dock: DockMode;
-	/** Shortcut that cycles the dock mode. */
+	/** Shortcut that opens and closes `/monitors`. */
 	shortcut: string;
 }
 
@@ -28,7 +24,6 @@ export const DEFAULT_SETTINGS: Settings = {
 	backgroundAfterSeconds: 30,
 	desktopNotifications: true,
 	reducedMotion: false,
-	dock: "card",
 	shortcut: "ctrl+shift+m",
 };
 
@@ -58,7 +53,6 @@ function validate(raw: Record<string, unknown>): Partial<Settings> {
 		...pick(raw, "backgroundAfterSeconds", positive),
 		...pick(raw, "desktopNotifications", bool),
 		...pick(raw, "reducedMotion", bool),
-		...pick(raw, "dock", (v) => v === "card" || v === "line" || v === "hidden"),
 		...pick(raw, "shortcut", (v) => typeof v === "string" && v.length > 0),
 	};
 }

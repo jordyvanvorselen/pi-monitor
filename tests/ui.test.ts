@@ -238,30 +238,19 @@ describe("UI wiring", () => {
 		await h.fire("session_shutdown", { reason: "quit" });
 	});
 
-	it("cycles card, line and hidden with the shortcut and keeps a footer status when hidden", async () => {
-		const { h, stub } = setup();
-		await h.fire("session_start", { reason: "startup" });
-		await h.call("monitor", { description: "server", command: "sleep 30" });
-		const shortcut = h.shortcuts["ctrl+shift+m"]!;
-		shortcut(h.ctx);
-		assert.equal(stub.render(100).length, 1, "line mode");
-		shortcut(h.ctx);
-		assert.ok(stub.log.includes("widget monitor off"));
-		assert.ok(stub.log.includes("status monitor ◉ 1 monitor"));
-		shortcut(h.ctx);
-		assert.ok(stub.render(100).length > 1, "card again");
-		assert.ok(stub.log.lastIndexOf("status monitor off") > stub.log.indexOf("status monitor ◉ 1 monitor"));
-		await h.fire("session_shutdown", { reason: "quit" });
-	});
-
-	it("folds to one line while the agent streams", async () => {
+	it("keeps the full card while the agent works and never sets a footer status", async () => {
 		const { h, stub } = setup();
 		await h.fire("session_start", { reason: "startup" });
 		await h.call("monitor", { description: "server", command: "sleep 30" });
 		await h.fire("agent_start");
-		assert.equal(stub.render(120).length, 1);
+		await h.fire("turn_start", { turnIndex: 0, timestamp: Date.now() });
+		await h.fire("message_update", { message: { role: "assistant" } });
+		const lines = stub.render(120);
+		assert.equal(lines.length, 3, "top border, one row, bottom border");
+		assert.match(lines[0]!, /^╭─ monitors/);
 		await h.fire("agent_settled");
-		assert.ok(stub.render(120).length > 1);
+		assert.deepEqual(stub.render(120), lines);
+		assert.equal(stub.log.filter((l) => l.startsWith("status ")).length, 0);
 		await h.fire("session_shutdown", { reason: "quit" });
 	});
 
