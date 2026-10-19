@@ -8,8 +8,10 @@ export interface Settings {
 	/** Monitors that may run at the same time. */
 	maxConcurrent: number;
 	defaultTimeoutMinutes: number;
-	/** Block `gh run watch`, `gh pr checks --watch` and long `sleep` calls in bash. */
-	blockBlockingWaits: boolean;
+	/** Pin a classifier for the bash interceptor, as `provider/id`. Default: the first available one. */
+	classifier?: string;
+	/** The safety net moves an unsure bash command to the background after this many seconds. */
+	backgroundAfterSeconds: number;
 	/** OSC 9/99/777 desktop notification when a monitor ends. */
 	desktopNotifications: boolean;
 	/** No spinner and no flash. Clocks still tick once a second. */
@@ -23,7 +25,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
 	maxConcurrent: 5,
 	defaultTimeoutMinutes: 30,
-	blockBlockingWaits: true,
+	backgroundAfterSeconds: 30,
 	desktopNotifications: true,
 	reducedMotion: false,
 	dock: "card",
@@ -52,7 +54,8 @@ function validate(raw: Record<string, unknown>): Partial<Settings> {
 	return {
 		...pick(raw, "maxConcurrent", positive),
 		...pick(raw, "defaultTimeoutMinutes", positive),
-		...pick(raw, "blockBlockingWaits", bool),
+		...pick(raw, "classifier", (v) => typeof v === "string" && v.includes("/")),
+		...pick(raw, "backgroundAfterSeconds", positive),
 		...pick(raw, "desktopNotifications", bool),
 		...pick(raw, "reducedMotion", bool),
 		...pick(raw, "dock", (v) => v === "card" || v === "line" || v === "hidden"),

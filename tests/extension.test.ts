@@ -9,8 +9,8 @@ describe("extension wiring", () => {
 		const h = harness();
 		const tool = h.tools.monitor!;
 		assert.ok(tool.promptSnippet);
-		assert.ok(tool.promptGuidelines && tool.promptGuidelines.length >= 1 && tool.promptGuidelines.length <= 4);
-		assert.match(tool.promptGuidelines.join(" "), /Do not sleep or poll in bash/);
+		assert.ok(tool.promptGuidelines && tool.promptGuidelines.length >= 1 && tool.promptGuidelines.length <= 3);
+		assert.match(tool.promptGuidelines.join(" "), /moves them to the background/);
 	});
 
 	it("starts a command monitor, answers at once and reports the end", async () => {

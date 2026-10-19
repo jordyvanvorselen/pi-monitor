@@ -26,7 +26,14 @@ interface ToolDef {
 
 /** A stub `pi` and `ctx` that record what the extension does. Headless unless `ui` is given. */
 export function harness(
-	options: { overrides?: MonitorOverrides; branch?: unknown[]; idle?: boolean; ui?: unknown } = {},
+	options: {
+		overrides?: MonitorOverrides;
+		branch?: unknown[];
+		idle?: boolean;
+		ui?: unknown;
+		modelRegistry?: unknown;
+		piSettings?: Record<string, unknown>;
+	} = {},
 ) {
 	const handlers: Record<string, Handler[]> = {};
 	const tools: Record<string, ToolDef> = {};
@@ -54,6 +61,8 @@ export function harness(
 			branch.push({ type: "custom", customType, data });
 		},
 		getSessionName: () => undefined,
+		getSettings: () => options.piSettings ?? {},
+		registerToolRenderer: (resolver: unknown) => (renderers["tool"] = resolver),
 	};
 	const ctx = {
 		cwd,
@@ -61,6 +70,7 @@ export function harness(
 		hasUI: Boolean(options.ui),
 		ui: options.ui ?? {},
 		isIdle: () => state.idle,
+		...(options.modelRegistry ? { modelRegistry: options.modelRegistry } : {}),
 		sessionManager: { getSessionId: () => "test-session", getBranch: () => branch, getCwd: () => cwd },
 	};
 	ext(pi as never, { home, logRoot, ...options.overrides });

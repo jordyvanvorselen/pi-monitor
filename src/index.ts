@@ -3,8 +3,11 @@ import { Text } from "@earendil-works/pi-tui";
 import { CUSTOM_TYPE, Delivery, realClock, type Clock, type MonitorMessageDetails } from "./delivery.ts";
 import { defaultRun } from "./exec.ts";
 import { formatDuration } from "./format.ts";
-import { blockingWaitReason } from "./guard.ts";
-import { cleanupOldLogs, MonitorLog, sessionLogDir } from "./log.ts";
+import { Interceptor } from "./intercept/index.ts";
+import { SafetyNet } from "./intercept/safety-net.ts";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { cleanupOldLogs, LOG_ROOT, MonitorLog, sessionLogDir } from "./log.ts";
 import { desktopNotification, openExternal } from "./notify.ts";
 import { Registry, startMonitor, type MonitorEntry } from "./registry.ts";
 import { planResume } from "./resume.ts";
@@ -14,6 +17,7 @@ import type { Run } from "./sources/types.ts";
 import { MonitorParams, prepareMonitorArgs, specFromInput, StopParams } from "./tools.ts";
 import { UiController } from "./ui/controller.ts";
 import { MonitorsOverlay } from "./ui/overlay.ts";
+import { bashRenderer } from "./ui/bash-renderer.ts";
 import { renderMonitorMessage } from "./ui/renderer.ts";
 
 export { CUSTOM_TYPE } from "./delivery.ts";
@@ -26,8 +30,10 @@ export interface MonitorOverrides {
 	logRoot?: string;
 	home?: string;
 	notify?: (title: string, body: string) => void;
+	/** Environment for the interceptor kill switch. */
+	env?: NodeJS.ProcessEnv;
 	/** Hands internals to tests. */
-	expose?: (internals: { registry: Registry; ui: UiController }) => void;
+	expose?: (internals: { registry: Registry; ui: UiController; interceptor: Interceptor }) => void;
 }
 
 export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOverrides = {}) {
@@ -74,7 +80,38 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		notify: overrides.notify ?? desktopNotification,
 	});
 
-	overrides.expose?.({ registry, ui });
+	const log = (message: string) => {
+		try {
+			const root = overrides.logRoot ?? LOG_ROOT;
+			mkdirSync(root, { recursive: true });
+			appendFileSync(join(root, "interceptor.log"), `${new Date().toISOString()} ${message}\n`);
+		} catch {
+			// logging is best effort
+		}
+	};
+
+	const safetyNet = new SafetyNet({
+		registry,
+		logDir: () => logDir,
+		shell: () => {
+			const piSettings = pi.getSettings() as { shellPath?: string; shellCommandPrefix?: string };
+			return {
+				path: piSettings.shellPath || "bash",
+				...(piSettings.shellCommandPrefix ? { prefix: piSettings.shellCommandPrefix } : {}),
+			};
+		},
+		thresholdSeconds: () => settings.backgroundAfterSeconds,
+	});
+
+	const interceptor = new Interceptor({
+		registry,
+		safetyNet,
+		settings: () => settings,
+		log,
+		...(overrides.env ? { env: overrides.env } : {}),
+	});
+
+	overrides.expose?.({ registry, ui, interceptor });
 
 	pi.registerTool({
 		name: "monitor",
@@ -84,8 +121,9 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 			"You get a message when something worth knowing happens; failures arrive at once. Give exactly one source.",
 		promptSnippet: "Watch CI runs, PR checks, deploys, slow commands, files, URLs or processes in the background",
 		promptGuidelines: [
-			"To wait for CI, deploys, builds or slow commands, start a `monitor` and continue working. Do not sleep or poll in bash. Monitors report back on their own.",
-			"Monitor messages include a log path. Use `read` on it when you need the full output.",
+			"You may run long or never-ending commands (dev servers, deploys, `gh run watch`, `sleep 60 && …`) in bash. pi-monitor moves them to the background and reports back when they end.",
+			"Use `monitor` for explicit control: filter output with `match`, pick `wake`, or watch gh_run, gh_pr, url, pid or a file.",
+			"Monitor messages include a log path. `read` it for the full output.",
 		],
 		parameters: MonitorParams,
 		prepareArguments: prepareMonitorArgs,
@@ -123,6 +161,8 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		return new Text(renderMonitorMessage(content, message.details, expanded, theme), 0, 0);
 	});
 
+	pi.registerToolRenderer(bashRenderer((toolCallId, command) => interceptor.lookup(toolCallId, command)));
+
 	pi.registerShortcut(settings.shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 		description: "Monitor dock: card, one line, hidden",
 		handler: (ctx) => {
@@ -151,8 +191,27 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 					const unsubscribe = ui.subscribe(() => tui.requestRender());
 					return new MonitorsOverlay(
 						{
-							items: () => registry.list(),
-							stop: (id) => registry.stop(id),
+							items: () => registry.visible(),
+							stop: (id) => {
+								const record = registry.get(id);
+								if (!record || !registry.stop(id)) return;
+								// Tell the model without waking it: it reads this with its next turn.
+								pi.sendMessage(
+									{
+										customType: CUSTOM_TYPE,
+										content: `[monitor ${id} "${record.description}"] stopped by the user.`,
+										display: true,
+										details: {
+											id,
+											description: record.description,
+											kind: "final",
+											status: "stopped",
+											summary: "stopped by the user",
+										} satisfies MonitorMessageDetails,
+									},
+									{ deliverAs: "nextTurn" },
+								);
+							},
 							open: openExternal,
 							now: () => clock.now(),
 							frame: () => ui.currentFrame(),
@@ -177,6 +236,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		settings = loadSettings(ctx.cwd, overrides.home);
 		logDir = sessionLogDir(ctx.sessionManager.getSessionId(), overrides.logRoot);
 		cleanupOldLogs(overrides.logRoot);
+		interceptor.reset();
 		ui.attach(ctx);
 
 		const plan = planResume(ctx.sessionManager.getBranch(), ENTRY_TYPE);
@@ -206,18 +266,20 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		registry.clearHandling();
 	});
 
-	pi.on("tool_call", async (event) => {
-		if (!settings.blockBlockingWaits || event.toolName !== "bash") return;
-		const command = (event.input as { command?: unknown }).command;
-		if (typeof command !== "string") return;
-		const reason = blockingWaitReason(command);
-		return reason ? { block: true, reason } : undefined;
+	pi.on("tool_call", async (event, ctx) => {
+		ctxRef = ctx;
+		await interceptor.onToolCall(event, ctx);
+	});
+
+	pi.on("tool_result", async (event) => {
+		if (event.toolName === "bash") interceptor.onToolResult(event.toolCallId);
 	});
 
 	pi.on("session_shutdown", async () => {
 		shutDown = true;
 		registry.stopAll();
 		delivery.dispose();
+		safetyNet.dispose();
 		ui.detach();
 	});
 }
