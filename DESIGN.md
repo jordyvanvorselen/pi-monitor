@@ -124,83 +124,120 @@ Each source is a small TypeScript module with the same shape:
 
 ```ts
 interface Source {
-  start(signal: AbortSignal, emit: (e: MonitorEvent) => void): Promise<Outcome>;
+  kind: SourceKind;
+  label: string; // "gh run 123456"
+  start(ctx: SourceContext): Promise<Outcome>;
 }
-type MonitorEvent = { text: string; level: "progress" | "notable" | "failure" };
-type Outcome = { status: "success" | "failure" | "timeout" | "stopped"; summary: string };
+interface SourceContext {
+  signal: AbortSignal;
+  cwd: string;
+  run: Run; // execFile without a shell; tests replace it, so gh never runs in CI
+  now(): number;
+  sleep(ms: number): Promise<void>; // resolves early on stop
+  emit(e: MonitorEvent): void; // structured event; delivery decides if it wakes the model
+  line(text: string, stream?: "stdout" | "stderr"): void; // raw output; log + UI, `match` makes it an event
+  update(p: Partial<Progress>): void; // UI only: title, url, jobs, ETA
+}
+type MonitorEvent = { text: string; level: "progress" | "notable" | "failure"; context?: string; detail?: string[] };
+type Outcome = { status: "success" | "failure" | "timeout" | "stopped"; summary: string; detail?: string[] };
 ```
+
+Other modules start monitors with `startMonitor(registry, spec)` from `registry.ts`. It returns the id and the "Started m3 …" text. The `monitor` tool is a thin wrapper around it.
 
 ### `gh_run`
 
-- Polls `gh run view <id> --json status,conclusion,jobs` with backoff: every 5 seconds for the first minute, then 15, then 30.
+- Polls `gh run view <id> --json status,conclusion,jobs,…` with backoff: every 5 seconds for the first minute, then 15, then 30 after five minutes.
 - Compares each poll with the last one. It emits **changes only**: job started, job finished, run finished.
 - On a failed job it runs `gh run view --job <id> --log-failed` and keeps the tail.
-- `"latest"` resolves to the newest run for `git branch --show-current`. If the run does not exist yet, it waits up to 60 seconds. This covers "push, then monitor".
+- `"latest"` resolves to the newest run for `git rev-parse HEAD` on `git branch --show-current`. If the run does not exist yet, it waits up to 60 seconds, then falls back to the newest run on the branch. This covers "push, then monitor".
+- Once per run it asks `gh run list --workflow <id> --status success --limit 10` for the median duration. The UI shows it as an ETA bar.
+- Auth errors and a missing `gh` end the monitor at once. Other gh errors are retried; five in a row end it.
 
 ### `gh_pr`
 
-- Polls `gh pr checks <pr> --json name,state,bucket,link`.
-- Final state: all checks pass, or any check fails.
+- Polls `gh pr checks <pr> --json name,state,bucket,link,startedAt,completedAt,workflow`.
+- A failed check wakes the model at once. The monitor keeps running until no check is pending, then ends with the totals. "No checks reported" right after a push is treated as "keep waiting".
 - A failure in a GitHub Actions check reuses the `gh_run` log fetch.
 
 ### `command`
 
 - Spawns `bash -c` in its own process group, so stop and shutdown kill the whole tree.
 - Reads stdout line by line. Stderr goes to the log only, unless `match` is set. Then both streams are filtered.
-- Exit code 0 means success. Any other code means failure.
+- Exit code 0 means success. Any other code means failure. The failure message carries the last 30 lines.
+- The source takes a `CommandOrigin`: `spawn` (the tool), `child` (adopt a child process that already runs, for a future bash interceptor) or `log` (follow a log file plus pid; declared, not built yet).
 
 ### `file`, `url`, `pid`
 
-Small helpers: tail with `fs.watch`, poll an HTTP endpoint with backoff, and poll `process.kill(pid, 0)`.
+Small helpers: tail a file every 500 ms (like `tail -F`: new lines only, survives truncation, waits for the file), poll an HTTP endpoint with backoff (2 s, 5 s, 10 s), and poll `process.kill(pid, 0)` every second.
 
-## What the user sees
+## UI
 
-### Footer status
+Everything the user sees outside the transcript lives in `src/ui/`. Colors come from `theme.fg(...)` at render time, widths are measured with `visibleWidth`/`truncateToWidth` from pi-tui, and rendered lines are cached per width until something changes. Only TUI mode (`ctx.mode === "tui"`) gets UI. The tools work headless.
 
-```
-◉ 2 monitors · CI #42 ▸ test (3/5) · dev server ✓
-```
+### Dock above the editor
 
-Set with `ctx.ui.setStatus("monitor", …)`. It is cleared when no monitor runs.
-
-### Widget above the editor
-
-Shown only while a monitor runs. One line per monitor:
+A rounded card, shown only while there is something to show:
 
 ```
-⠋ m3  CI for PR #42      test ▸ Run unit tests     4m10s
-✓ m2  build docker image  done                      1m02s
-✗ m1  e2e on staging      job "smoke" failed        8m40s   ctrl+o
+╭─ monitors ───────────────────────────────────────── 2 running · 1 failed · saved ~6.2k tok ─╮
+│ ✗ e2e on staging exited with code 1 after 8m16s                                              │
+│ ⠹ dev server  ▁▁▂▅▇▅▂▁  last: GET /api/users 200 in 12ms · 12s ago   pi is on it ↳  10m00s │
+│ ⠹ CI #42  ●━━●━━◐┄┄○┄┄○  test ▸ Run unit tests                         ▰▰▰▱▱ ~1m  4m10s │
+╰──────────────────────────────────────────────────────────── ctrl+shift+m view · /monitors ─╯
 ```
 
-A finished row stays for 10 seconds, then disappears.
+- Title "monitors" in the top border, summary on the right: running, failed and the token savings meter.
+- Each row starts with a spinner (red when a job already failed, `‖` when paused) and the name. For GitHub sources the name is an OSC 8 link to the run or PR.
+- `gh_run`/`gh_pr` rows: job track (`●` done, `◐` running, `○` queued, `✗` failed, `◌` skipped; solid links after finished jobs), current job `▸` step, ETA bar from the median of the last ten green runs, elapsed time. Long tracks shrink, very long ones become `12/30`.
+- `command`, `file`, `url`, `pid` rows: sparkline of lines per 10 s, then `last: <line> · 12s ago`. The age dims after a minute and turns into a warning `quiet 5m` after five minutes.
+- `pi is on it ↳` while the model handles a message from that monitor: from the message (or the turn it triggers) until `agent_settled`.
+- Failures first, then running monitors (oldest first), then finished ones. More than four rows: the three most important plus `+2 more · /monitors`.
 
-### `/monitors` command
+### Moments
 
-An overlay that lists running and recent monitors. Keys: `enter` opens the log, `s` stops, `w` cycles the wake level, `esc` closes.
+- A finished row flashes in success or error color for 1.5 s, then collapses to `✓ CI #42 green in 6m02s` and disappears after 10 s.
+- Terminal title via `ctx.ui.setTitle`: `⠹ pi · CI 3/5` while running, `✓ CI green` or `✗ CI failed` for 10 s after the end, then Pi's own `π - <session> - <dir>`.
+- Desktop notification on success, failure and timeout: OSC 99 (kitty), OSC 9 (iTerm2) or OSC 777 (others). Setting `desktopNotifications`.
+- Token savings meter: a polling loop would cost one call per full 30 s of watching at about 200 tokens. Savings are that minus the tokens pi-monitor delivered, summed over monitors that may wake the model. It ignores the cost of re-reading the growing context, so the real saving is larger. See `src/savings.ts`.
 
-### Desktop notification (optional)
+### Responsive
 
-When a monitor ends and the terminal is not focused, pi-monitor sends an OSC 9 or OSC 777 notification. The user can switch away from the terminal.
+- Wide (≥ 88 columns inside the card): everything.
+- Medium (56–87): no sparkline and no ETA.
+- Narrow (< 56): `⠹ CI #42 2/5 4m`.
+- While the agent streams the dock folds to one line, `◉ 3 monitors · CI #42 3/5 · e2e ✗`, and opens again when Pi settles.
+- `ctrl+shift+m` (setting `shortcut`) cycles card → one line → hidden. When hidden, the footer shows `◉ 2 monitors` through `ctx.ui.setStatus`. Otherwise the footer stays clean because the dock already says it all. The key needs a terminal with the kitty keyboard protocol; `alt+m` is a good alternative for others.
+
+### `/monitors` overlay
+
+Running and recent monitors, a per-job Gantt timeline of the selected one (activity sparkline for non-GitHub sources) and a live tail of its log. Keys: `↑↓` select, `enter` full log view (scroll with `↑↓`/PgUp/PgDn), `o` opens the run or PR in the browser (the log file when there is no URL), `s` stops, `esc` closes. Outside TUI mode `/monitors` prints a plain list.
+
+### Transcript
+
+Monitor messages use `customType: "monitor"` with a renderer. Collapsed: `✗ monitor m3 CI for PR #42 · failed: …`. Expanded: the exact text the model got.
+
+### Performance
+
+One timer drives everything. It ticks every 120 ms while a monitor runs (spinner), every 250 ms while finished rows fade out, and stops when nothing is visible and on `session_shutdown`. `reducedMotion` turns off spinner and flash and ticks once a second. During output bursts redraws wait for the next tick instead of following every line.
 
 ## Nudging the model away from blocking
 
-- The tool description and `promptGuidelines` say: "To wait for CI, a deploy or a slow command, use `monitor`. Do not sleep or poll in bash."
-- Optional guard, on by default: a `tool_call` handler blocks `gh run watch`, `gh pr checks --watch` and `sleep` over 20 seconds in `bash`. The reason it returns points to the matching `monitor` call. One blocked call teaches the model in about 50 tokens.
+- The tool description, `promptSnippet` and `promptGuidelines` say: "To wait for CI, deploys, builds or slow commands, start a `monitor` and continue working. Do not sleep or poll in bash. Monitors report back on their own." Pi adds these lines to the system prompt only while the tool is active, as a transcript delta, so the cached prefix survives. No `before_agent_start` prompt edits.
+- Optional guard, on by default: a `tool_call` handler blocks `gh run watch`, `gh pr checks --watch` and `sleep` over 20 seconds in `bash`. The reason it returns points to the matching `monitor` call. One blocked call teaches the model in about 50 tokens. This is a stop-gap: `src/guard.ts` exports only `blockingWaitReason`, so a smarter bash interceptor can replace it.
 
 ## Lifecycle and state
 
 - No timers or processes start in the factory. Monitors start from the tool call.
 - `session_shutdown` aborts every monitor and kills its process group. Cleanup is idempotent.
-- Every start and end is recorded with `pi.appendEntry("monitor", …)`. This data stays out of the model context.
+- Every start, end and resolved `"latest"` run is recorded with `pi.appendEntry("monitor-state", …)`. This data stays out of the model context.
 - On `session_start` after a resume, pi-monitor reads the branch entries:
-  - It restarts `gh_run` and `gh_pr` watchers that had not finished. They hold no state beyond the id.
-  - It marks `command` watchers as "ended with the session" in the UI.
+  - It restarts `gh_run` and `gh_pr` watchers that had not finished, with the same id. They hold no state beyond the target.
+  - It marks other watchers (`command`, `file`, `url`, `pid`) as "ended with the session" in the UI.
 - Logs live in `os.tmpdir()/pi-monitor/<session>/<id>.log`. They are removed after 7 days.
 
 ## Settings
 
-Read from `.pi/settings.json` under `"monitor"`:
+Read from `~/.pi/agent/settings.json` and `.pi/settings.json` under `"monitor"`. The project file wins.
 
 ```json
 {
@@ -208,7 +245,10 @@ Read from `.pi/settings.json` under `"monitor"`:
     "maxConcurrent": 5,
     "defaultTimeoutMinutes": 30,
     "blockBlockingWaits": true,
-    "desktopNotifications": true
+    "desktopNotifications": true,
+    "reducedMotion": false,
+    "dock": "card",
+    "shortcut": "ctrl+shift+m"
   }
 }
 ```
@@ -217,28 +257,31 @@ Read from `.pi/settings.json` under `"monitor"`:
 
 ```
 src/
-  index.ts          register tools, command, events
-  registry.ts       running monitors, ids, limits, stop/stopAll
+  index.ts          register tools, command, shortcut, renderer, events
+  tools.ts          tool schemas, argument checks, spec from tool input
+  registry.ts       running monitors, ids, limits, stop/stopAll, startMonitor()
   delivery.ts       wake level, batching, flood guard, sendMessage options
   format.ts         ANSI strip, dedupe, truncate, event text
-  sources/
-    command.ts
-    gh-run.ts
-    gh-pr.ts
-    file.ts url.ts pid.ts
-  ui/
-    widget.ts status.ts overlay.ts renderer.ts
-  guard.ts          blocks blocking waits in bash
+  log.ts            log files and cleanup
+  resume.ts         what to restart after a resume
+  savings.ts        token savings estimate
+  exec.ts           default run() and abortable sleep
+  notify.ts         desktop notification, open in browser
+  guard.ts          blocks blocking waits in bash (stop-gap)
   settings.ts
+  sources/
+    types.ts index.ts command.ts gh.ts gh-run.ts gh-pr.ts file.ts url.ts pid.ts
+  ui/
+    glyphs.ts       spinner, job track, ETA bar, sparkline
+    dock.ts         dock rendering and component
+    title.ts        terminal title
+    controller.ts   widget, status, title, notifications, timer
+    overlay.ts      /monitors
+    renderer.ts     transcript messages
 tests/
-  format.test.ts      truncation and dedupe
-  delivery.test.ts    wake levels, followUp vs steer, flood guard (fake clock)
-  gh-run.test.ts      state diffing against recorded gh JSON fixtures
-  command.test.ts     real child process: lines, exit code, process group kill
-  guard.test.ts
+  format, delivery (fake clock), gh (JSON fixtures), command (real processes, group kill),
+  sources (file, url, pid), guard, registry, resume, dock (several widths, stub theme), ui, extension
 ```
-
-Sources get a `run(cmd)` function that tests replace, so `gh` never runs in CI.
 
 ## Build order
 
