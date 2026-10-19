@@ -1,8 +1,11 @@
 import type { MonitorSpec } from "../registry.ts";
 import { commandSource } from "./command.ts";
+import { fileSource } from "./file.ts";
 import { ghPrSource } from "./gh-pr.ts";
 import { ghRunSource } from "./gh-run.ts";
+import { pidSource } from "./pid.ts";
 import type { Source } from "./types.ts";
+import { urlSource } from "./url.ts";
 
 export function buildSource(spec: MonitorSpec): Source {
 	switch (spec.kind) {
@@ -12,7 +15,11 @@ export function buildSource(spec: MonitorSpec): Source {
 			return ghRunSource(spec.target);
 		case "gh_pr":
 			return ghPrSource(spec.target);
-		default:
-			throw new Error(`Source ${spec.kind} is not supported yet.`);
+		case "file":
+			return fileSource(spec.target);
+		case "url":
+			return urlSource(spec.target);
+		case "pid":
+			return pidSource(Number(spec.target));
 	}
 }
