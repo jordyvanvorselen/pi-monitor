@@ -210,7 +210,7 @@ A rounded card, shown only while there is something to show:
 
 ### `/monitors` overlay
 
-Running and recent monitors, a per-job Gantt timeline of the selected one (activity sparkline for non-GitHub sources) and a live tail of its log. Keys: `↑↓` select, `enter` full log view (scroll with `↑↓`/PgUp/PgDn), `o` opens the run or PR in the browser (the log file when there is no URL), `s` stops, `esc` closes. Outside TUI mode `/monitors` prints a plain list.
+Running and recent monitors, a per-job Gantt timeline of the selected one (activity sparkline for non-GitHub sources) and a live tail of its log. Keys: `↑↓` select, `enter` full log view (scroll with `↑↓`/PgUp/PgDn), `o` opens the run or PR in the browser (the log file when there is no URL), `s` stops (the model hears about it with its next turn, through `deliverAs: "nextTurn"`, without being woken), `esc` closes. Outside TUI mode `/monitors` prints a plain list.
 
 ### Transcript
 
@@ -220,10 +220,38 @@ Monitor messages use `customType: "monitor"` with a renderer. Collapsed: `✗ mo
 
 One timer drives everything. It ticks every 120 ms while a monitor runs (spinner), every 250 ms while finished rows fade out, and stops when nothing is visible and on `session_shutdown`. `reducedMotion` turns off spinner and flash and ticks once a second. During output bursts redraws wait for the next tick instead of following every line.
 
-## Nudging the model away from blocking
+## The bash interceptor
 
-- The tool description, `promptSnippet` and `promptGuidelines` say: "To wait for CI, deploys, builds or slow commands, start a `monitor` and continue working. Do not sleep or poll in bash. Monitors report back on their own." Pi adds these lines to the system prompt only while the tool is active, as a transcript delta, so the cached prefix survives. No `before_agent_start` prompt edits.
-- Optional guard, on by default: a `tool_call` handler blocks `gh run watch`, `gh pr checks --watch` and `sleep` over 20 seconds in `bash`. The reason it returns points to the matching `monitor` call. One blocked call teaches the model in about 50 tokens. This is a stop-gap: `src/guard.ts` exports only `blockingWaitReason`, so a smarter bash interceptor can replace it.
+The model does not have to know about `monitor` to avoid blocking. A `tool_call` handler looks at every `bash` call and moves waits and long-running commands to the background. A `tool_call` handler can only change the input or block, so it changes the command into something harmless that prints the answer. The model gets a normal, successful result.
+
+```
+bash tool_call
+   │
+   ├─ print/JSON mode, or PI_MONITOR_INTERCEPT=0 ─────────────▶ run as is
+   │
+   ├─ known wait? gh run watch · gh pr checks --watch
+   │             sleep N && X (N > 20) · tail -f F [| grep P] ─▶ start monitor, command → printf "Running in background as m3 …"
+   │
+   ├─ obviously short? (ls, cat, rg, git status, …) ──────────▶ run as is
+   │
+   └─ suspect: classifier (or keyword guess without one)
+         ├─ short ───────────────────────────────────────────▶ run as is
+         ├─ background ──────────────────────────────────────▶ command monitor (wake final), command → printf
+         └─ unsure ── safety net: pi-monitor runs the command itself, bash runs a wait script
+                         ├─ ends within 30 s ─▶ wait script prints the output, exits with the real code
+                         └─ still running ────▶ "Still running after 30s. Moved to background as m4 …", exit 0;
+                                                 the monitor wakes the model when the command ends
+```
+
+- **Print and JSON mode** end after the run, so nothing would receive a later message. The interceptor only acts when `ctx.hasUI` is true (TUI and RPC). `PI_MONITOR_INTERCEPT=0` turns it off.
+- **Patterns** (`src/intercept/patterns.ts`) use a small shell lexer that gives up on subshells, command substitution, here-docs, braces, variables and globs. Anything with redirects or chains it does not fully understand is not rewritten.
+- **Obviously short**: every command in the line starts with a known quick command (`ls`, `cat`, `rg`, `jq`, `git status/diff/log/show/…`, …). Test runners are not on the list; they can take long.
+- **Classifier**: `ctx.modelRegistry.getAvailableOfType("classifier")`, the pinned `classifier` setting or the first one. One choice question (`background`, `short`, `unsure`) about `{ command, cwd, assistant_message }`, with a 1.5 s timeout through the abort signal. `classify()` never throws; a non-`stop` stop reason, a timeout or a confidence below 0.6 means `unsure`. Answers are cached per exact command for the session.
+- **Keyword guess** without a classifier: dev servers, watchers, `--follow`, deploys, `docker compose up` and similar mean `unsure`; everything else runs as is.
+- **Safety net** (`src/intercept/safety-net.ts`): spawns the command with Pi's `shellPath` and `shellCommandPrefix` in its own process group and adopts the child as a hidden command monitor. Output goes to the monitor log and to a capture file. A status file holds `exit:<code>`, `bg` or `timeout`; the wait script polls it every 200 ms. A bash `timeout` shorter than the threshold is honoured: the command is killed and the script exits 124. If the bash call ends before a decision (abort), the command is stopped too.
+- **Transcript**: `pi.registerToolRenderer` shows rewritten calls with the original command and `→ monitor m3`. The rewritten command carries a `# pi-monitor: {…}` marker with the original, so this also works after a restart.
+- **Fail open**: any error in the interceptor leaves the command untouched and is logged to `<tmp>/pi-monitor/interceptor.log`.
+- The tool's `promptSnippet` and `promptGuidelines` tell the model it may run long commands in bash and that `monitor` gives explicit control. Pi adds these lines to the system prompt only while the tool is active, as a transcript delta. No `before_agent_start` prompt edits.
 
 ## Lifecycle and state
 
@@ -244,7 +272,8 @@ Read from `~/.pi/agent/settings.json` and `.pi/settings.json` under `"monitor"`.
   "monitor": {
     "maxConcurrent": 5,
     "defaultTimeoutMinutes": 30,
-    "blockBlockingWaits": true,
+    "backgroundAfterSeconds": 30,
+    "classifier": "typesafe/jev-latest",
     "desktopNotifications": true,
     "reducedMotion": false,
     "dock": "card",
@@ -267,7 +296,13 @@ src/
   savings.ts        token savings estimate
   exec.ts           default run() and abortable sleep
   notify.ts         desktop notification, open in browser
-  guard.ts          blocks blocking waits in bash (stop-gap)
+  intercept/
+    index.ts        the bash interceptor flow
+    shell.ts        small shell lexer
+    patterns.ts     known blocking waits
+    triage.ts       skip list, keyword guess, classifier
+    safety-net.ts   run unsure commands, hand back or move to the background
+    rewrite.ts      printf and wait scripts, transcript marker
   settings.ts
   sources/
     types.ts index.ts command.ts gh.ts gh-run.ts gh-pr.ts file.ts url.ts pid.ts
@@ -278,9 +313,10 @@ src/
     controller.ts   widget, status, title, notifications, timer
     overlay.ts      /monitors
     renderer.ts     transcript messages
+    bash-renderer.ts rewritten bash calls in the transcript
 tests/
   format, delivery (fake clock), gh (JSON fixtures), command (real processes, group kill),
-  sources (file, url, pid), guard, registry, resume, dock (several widths, stub theme), ui, extension
+  sources (file, url, pid), patterns, triage (fake classifier), safety net (real processes), intercept, registry, resume, dock (several widths, stub theme), ui, extension
 ```
 
 ## Build order
