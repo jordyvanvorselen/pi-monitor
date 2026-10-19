@@ -1,7 +1,7 @@
 # pi-monitor design
 
 pi-monitor lets Pi start a watcher, keep working or go idle, and wake up only when something worth knowing happens.
-The user sees live progress in the footer and a widget. The model sees only the events that matter.
+The user sees live progress in a dock above the editor. The model sees only the events that matter.
 
 ## Goals
 
@@ -23,7 +23,7 @@ pi-monitor keeps that contract and adds three things:
 
 1. **Built-in sources** for common jobs, such as a GitHub Actions run. The model does not need to write a polling script.
 2. **Wake levels.** Each event says whether it should wake the model or only update the UI.
-3. **A real UI.** A widget, a footer status and a `/monitors` command.
+3. **A real UI.** A dock above the editor and a `/monitors` overlay.
 
 ## The model-facing surface
 
@@ -76,7 +76,7 @@ source ──lines──▶ filter (match, dedupe) ──▶ batcher (~500 ms)
                                                │
                          ┌─────────────────────┼──────────────────────┐
                          ▼                     ▼                      ▼
-                  log file (all)        widget + footer        model (wake events only)
+                  log file (all)        dock + title           model (wake events only)
 ```
 
 ### Wake levels
@@ -199,7 +199,7 @@ A rounded card, shown only while there is something to show:
 │ ✗ e2e on staging exited with code 1 after 8m16s                                              │
 │ ⠹ dev server  ▁▁▂▅▇▅▂▁  last: GET /api/users 200 in 12ms · 12s ago   pi is on it ↳  10m00s │
 │ ⠹ CI #42  ●━━●━━◐┄┄○┄┄○  test ▸ Run unit tests                         ▰▰▰▱▱ ~1m  4m10s │
-╰──────────────────────────────────────────────────────────── ctrl+shift+m view · /monitors ─╯
+╰──────────────────────────────────────────────────────────── ───────── ctrl+shift+m details ─╯
 ```
 
 - Title "monitors" in the top border, summary on the right: running, failed and the token savings meter.
@@ -221,8 +221,13 @@ A rounded card, shown only while there is something to show:
 - Wide (≥ 88 columns inside the card): everything.
 - Medium (56–87): no sparkline and no ETA.
 - Narrow (< 56): `⠹ CI #42 2/5 4m`.
-- While the agent streams the dock folds to one line, `◉ 3 monitors · CI #42 3/5 · e2e ✗`, and opens again when Pi settles.
-- `ctrl+shift+m` (setting `shortcut`) cycles card → one line → hidden. When hidden, the footer shows `◉ 2 monitors` through `ctx.ui.setStatus`. Otherwise the footer stays clean because the dock already says it all. The key needs a terminal with the kitty keyboard protocol; `alt+m` is a good alternative for others.
+- The dock never folds or hides itself: it shows the full card whenever monitors exist, also while the agent works, and disappears only when there are none. A real-session test showed a folded one-line dock reads as a broken UI. Only a terminal too narrow for a card (< 24 columns) gets one line.
+- There is no footer status; the dock already says it all.
+- `ctrl+shift+m` (setting `shortcut`) opens `/monitors`; pressing it again or `esc` closes it. The overlay also checks the key itself, in case it keeps the focus. It does not clash with Pi's built-in bindings. The key needs a terminal with the kitty keyboard protocol; `alt+m` is a good alternative for others.
+
+### Probation rows
+
+A bash command the safety net runs shows at once as `⏳ yarn dev  ▁▂▅  last: … · 2s ago   background in 9s`, with a dim countdown instead of the clock. It counts as running in the summary. If it ends in time, bash gets its result and the row disappears quietly: no flash, no finished row, no title, no notification, no savings. If it moves to the background, it becomes a normal running row.
 
 ### `/monitors` overlay
 
@@ -264,7 +269,7 @@ bash tool_call
 - **Obviously short**: every command in the line starts with a known quick command (`ls`, `cat`, `rg`, `jq`, `git status/diff/log/show/…`, …). Test runners are not on the list; they can take long.
 - **Classifier**: `ctx.modelRegistry.getAvailableOfType("classifier")`, the pinned `classifier` setting or the first one. One choice question (`background`, `short`, `unsure`) about `{ command, cwd, assistant_message }`, with a 1.5 s timeout through the abort signal. `classify()` never throws; a non-`stop` stop reason, a timeout or a confidence below 0.6 means `unsure`. Answers are cached per exact command for the session.
 - **Keyword guess** without a classifier: dev servers, watchers, `--follow`, deploys, `docker compose up` and similar mean `unsure`; everything else runs as is.
-- **Safety net** (`src/intercept/safety-net.ts`): spawns the command with Pi's `shellPath` and `shellCommandPrefix` in its own process group and adopts the child as a hidden command monitor. Output goes to the monitor log and to a capture file. A status file holds `exit:<code>`, `bg` or `timeout`; the wait script polls it every 200 ms. A bash `timeout` shorter than the threshold is honoured: the command is killed and the script exits 124. A longer one bounds the backgrounded monitor. For known waits the bash `timeout` also becomes the monitor timeout, never below a timer's sleep plus 15 s. If the bash call ends before a decision (abort), the command is stopped too.
+- **Safety net** (`src/intercept/safety-net.ts`): spawns the command with Pi's `shellPath` and `shellCommandPrefix` in its own process group and adopts the child as a command monitor on probation (see Probation rows). Output goes to the monitor log and to a capture file. A status file holds `exit:<code>`, `bg` or `timeout`; the wait script polls it every 200 ms. A bash `timeout` shorter than the threshold is honoured: the command is killed and the script exits 124. A longer one bounds the backgrounded monitor. For known waits the bash `timeout` also becomes the monitor timeout, never below a timer's sleep plus 15 s. If the bash call ends before a decision (abort), the command is stopped too.
 - **Transcript**: Pi passes `tool_call` handlers a copy of the arguments and keeps the original tool call in the transcript, so the model and the user both see the command the model wrote; only what runs changes. Therefore the result text alone must say what happened: it names the monitor and says it runs in the background. `pi.registerToolRenderer` only adds a `→ monitor m3` line under the result while that monitor runs.
 - **Fail open**: any error in the interceptor leaves the command untouched and is logged to `<tmp>/pi-monitor/interceptor.log`.
 - The tool's `promptSnippet` and `promptGuidelines` tell the model it may run long commands in bash and that `monitor` gives explicit control. Pi adds these lines to the system prompt only while the tool is active, as a transcript delta. No `before_agent_start` prompt edits.
@@ -292,7 +297,6 @@ Read from `~/.pi/agent/settings.json` and `.pi/settings.json` under `"monitor"`.
     "classifier": "typesafe/jev-latest",
     "desktopNotifications": true,
     "reducedMotion": false,
-    "dock": "card",
     "shortcut": "ctrl+shift+m"
   }
 }
