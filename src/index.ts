@@ -68,7 +68,10 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 			if (!shutDown) pi.appendEntry<MonitorEntry>(ENTRY_TYPE, entry);
 		},
 		onChange: () => ui.changed(),
-		onEnd: (record) => ui.ended(record),
+		onEnd: (record) => {
+			ui.ended(record);
+			interceptor.monitorEnded(record.id);
+		},
 		clock,
 	});
 
@@ -161,7 +164,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		return new Text(renderMonitorMessage(content, message.details, expanded, theme), 0, 0);
 	});
 
-	pi.registerToolRenderer(bashRenderer((toolCallId, command) => interceptor.lookup(toolCallId, command)));
+	pi.registerToolRenderer(bashRenderer((toolCallId) => interceptor.monitorFor(toolCallId)));
 
 	pi.registerShortcut(settings.shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 		description: "Monitor dock: card, one line, hidden",
@@ -280,6 +283,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		registry.stopAll();
 		delivery.dispose();
 		safetyNet.dispose();
+		interceptor.reset();
 		ui.detach();
 	});
 }

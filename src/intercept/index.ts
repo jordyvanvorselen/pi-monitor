@@ -3,7 +3,7 @@ import type { MonitorSpec, Registry } from "../registry.ts";
 import { startMonitor } from "../registry.ts";
 import { MAX_TIMEOUT_MINUTES } from "../settings.ts";
 import { matchPattern, type Pattern } from "./patterns.ts";
-import { printfCommand, readMarker, type Interception } from "./rewrite.ts";
+import { printfCommand } from "./rewrite.ts";
 import { SafetyNet, shortCommand } from "./safety-net.ts";
 import { CommandClassifier, isObviouslyShort, keywordGuess, type ClassifierRegistry, type Verdict } from "./triage.ts";
 
@@ -87,8 +87,8 @@ export function lastAssistantText(branch: readonly unknown[]): string | undefine
  * Any error leaves the command untouched.
  */
 export class Interceptor {
-	/** toolCallId → original command, for the transcript renderer. */
-	readonly intercepted = new Map<string, Interception>();
+	/** toolCallId → monitor id, for the "→ monitor m3" tag on results. Cleared when the monitor ends. */
+	readonly intercepted = new Map<string, string>();
 	private readonly deps: InterceptorDeps;
 	private classifier: { registry: unknown; classifier: CommandClassifier } | undefined;
 
@@ -96,14 +96,20 @@ export class Interceptor {
 		this.deps = deps;
 	}
 
-	/** Forget per-session state (classifier cache). */
+	/** Forget per-session state: classifier cache and intercepted calls. */
 	reset(): void {
 		this.classifier = undefined;
+		this.intercepted.clear();
 	}
 
-	/** Look up an intercepted call: by id first, then by the marker in a rewritten command (after a restart). */
-	lookup(toolCallId: string, command: unknown): Interception | undefined {
-		return this.intercepted.get(toolCallId) ?? (typeof command === "string" ? readMarker(command) : undefined);
+	/** The monitor an intercepted bash call runs in, while that monitor runs. */
+	monitorFor(toolCallId: string): string | undefined {
+		return this.intercepted.get(toolCallId);
+	}
+
+	/** A monitor ended: its calls no longer get a tag. */
+	monitorEnded(id: string): void {
+		for (const [toolCallId, monitor] of this.intercepted) if (monitor === id) this.intercepted.delete(toolCallId);
 	}
 
 	async onToolCall(
@@ -116,12 +122,12 @@ export class Interceptor {
 		if (env.PI_MONITOR_INTERCEPT === "0" || !ctx.hasUI) return;
 		const input = event.input as { command?: unknown; timeout?: unknown };
 		const command = input.command;
-		if (typeof command !== "string" || !command.trim() || readMarker(command)) return;
+		if (typeof command !== "string" || !command.trim()) return;
 		try {
 			const replacement = await this.decide(event.toolCallId, command, input.timeout, ctx);
 			if (!replacement) return;
 			input.command = replacement.command;
-			this.intercepted.set(event.toolCallId, { id: replacement.id, command });
+			this.intercepted.set(event.toolCallId, replacement.id);
 		} catch (error) {
 			this.deps.log(`intercept failed, running "${shortCommand(command)}" unchanged: ${(error as Error).message}`);
 		}
@@ -144,7 +150,7 @@ export class Interceptor {
 		if (pattern) {
 			const spec = specFor(pattern, command, ctx.cwd, settings.defaultTimeoutMinutes);
 			const { id } = startMonitor(registry, spec);
-			return { id, command: printfCommand(backgroundText(id, command, spec.wake), { id, command }) };
+			return { id, command: printfCommand(backgroundText(id, command, spec.wake)) };
 		}
 		if (isObviouslyShort(command)) return undefined;
 
@@ -160,7 +166,7 @@ export class Interceptor {
 				cwd: ctx.cwd,
 				reportOutput: true,
 			});
-			return { id, command: printfCommand(backgroundText(id, command, "final"), { id, command }) };
+			return { id, command: printfCommand(backgroundText(id, command, "final")) };
 		}
 		const seconds = typeof timeout === "number" && timeout > 0 ? timeout : undefined;
 		const { id, script } = this.deps.safetyNet.start(toolCallId, command, ctx.cwd, seconds);

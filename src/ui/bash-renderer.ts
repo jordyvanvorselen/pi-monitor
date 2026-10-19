@@ -1,37 +1,49 @@
 import type { ToolRendererResolver } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
-import type { Interception } from "../intercept/rewrite.ts";
+import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 
-type Lookup = (toolCallId: string, command: unknown) => Interception | undefined;
+/** Adds one line under a result component. Keeps the inner component so the base renderer can reuse it. */
+class TaggedResult implements Component {
+	inner: Component;
+	tag: string;
+
+	constructor(inner: Component, tag: string) {
+		this.inner = inner;
+		this.tag = tag;
+	}
+
+	render(width: number): string[] {
+		return [...this.inner.render(width), truncateToWidth(this.tag, width)];
+	}
+
+	invalidate(): void {
+		this.inner.invalidate();
+	}
+}
 
 /**
- * Bash calls the interceptor rewrote show the original command and `→ monitor m3`
- * instead of the printf or wait script. Everything else falls through to `next()`.
+ * Pi already shows the original command of an intercepted bash call, because it keeps the original
+ * tool call arguments. This only adds `→ monitor m3` under the result while that monitor runs.
+ * Everything else falls through to `next()`.
  */
-export function bashRenderer(lookup: Lookup): ToolRendererResolver {
+export function bashRenderer(monitorFor: (toolCallId: string) => string | undefined): ToolRendererResolver {
 	return (toolName, next) => {
 		const base = next();
-		if (toolName !== "bash") return base;
+		if (toolName !== "bash" || !base?.renderResult) return base;
+		const renderResult = base.renderResult;
 		return {
 			...base,
-			renderCall(args, theme, context) {
-				const command = (args as { command?: unknown } | undefined)?.command;
-				const info = lookup(context.toolCallId, command);
-				if (!info)
-					return base?.renderCall ? base.renderCall(args, theme, context) : new Text(`$ ${String(command)}`, 0, 0);
-				const shown = { ...(args as object), command: info.command };
-				// Let the default renderer run for its side effects (timer), then replace its text.
-				const component = base?.renderCall ? base.renderCall(shown, theme, context) : new Text("", 0, 0);
-				const timeout = (args as { timeout?: unknown }).timeout;
-				const text =
-					theme.fg("toolTitle", theme.bold(`$ ${info.command}`)) +
-					(typeof timeout === "number" ? theme.fg("muted", ` (timeout ${timeout}s)`) : "") +
-					theme.fg("accent", `  → monitor ${info.id}`);
-				if ("setText" in component && typeof component.setText === "function") {
-					(component as Text).setText(text);
-					return component;
+			renderResult(result, options, theme, context) {
+				const previous = context.lastComponent;
+				const inner = previous instanceof TaggedResult ? previous.inner : previous;
+				const component = renderResult(result, options, theme, { ...context, lastComponent: inner });
+				const id = monitorFor(context.toolCallId);
+				if (!id) return component;
+				const tag = theme.fg("accent", `→ monitor ${id}`);
+				if (previous instanceof TaggedResult && previous.inner === component) {
+					previous.tag = tag;
+					return previous;
 				}
-				return new Text(text, 0, 0);
+				return new TaggedResult(component, tag);
 			},
 		};
 	};

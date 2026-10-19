@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { Interceptor } from "../src/intercept/index.ts";
 import { lastAssistantText } from "../src/intercept/index.ts";
-import { readMarker } from "../src/intercept/rewrite.ts";
 import type { Registry } from "../src/registry.ts";
 import { harness } from "./harness.ts";
 import { plainTheme, until } from "./helpers.ts";
@@ -59,7 +58,6 @@ describe("bash interceptor", () => {
 			await sh(input.command),
 			"Running in background as m1 (gh run watch 123 --exit-status). You will be notified when it ends.\n",
 		);
-		assert.deepEqual(readMarker(input.command), { id: "m1", command: "gh run watch 123 --exit-status" });
 		const record = internals().registry.get("m1")!;
 		assert.equal(record.kind, "gh_run");
 		assert.equal(record.spec.target, "123");
@@ -136,7 +134,7 @@ describe("bash interceptor", () => {
 		const plain = await bash("make build");
 		assert.equal(plain.input.command, "make build");
 		const suspect = await bash("sh -c 'echo pretend deploy'");
-		assert.match(suspect.input.command, /# pi-monitor: \{"id":"m1"/);
+		assert.notEqual(suspect.input.command, "sh -c 'echo pretend deploy'");
 		assert.equal(await sh(suspect.input.command), "pretend deploy\n");
 		await h.fire("session_shutdown", { reason: "quit" });
 	});
@@ -194,38 +192,103 @@ describe("bash interceptor", () => {
 });
 
 describe("bash transcript renderer", () => {
-	type Renderers = {
-		renderCall: (
-			args: unknown,
-			theme: unknown,
-			context: { toolCallId: string },
-		) => { text?: string; setText?: unknown };
-	};
 	const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+	type Result = { render(width: number): string[] };
+	type Renderers = {
+		renderCall?: unknown;
+		renderResult: (result: unknown, options: unknown, theme: unknown, context: object) => Result;
+	};
 
-	function resolver(h: ReturnType<typeof harness>) {
-		const resolve = h.renderers["tool"] as (name: string, next: () => unknown) => Renderers | undefined;
+	function resolve(h: ReturnType<typeof harness>, toolName = "bash") {
+		const resolver = h.renderers["tool"] as (name: string, next: () => unknown) => Renderers | undefined;
 		const base = {
-			renderCall: (args: { command: string }) => {
-				const component = { text: `$ ${args.command}`, setText: (t: string) => (component.text = t) };
-				return component;
-			},
+			renderCall: "default call renderer",
+			renderResult: (result: { text: string }, _o: unknown, _t: unknown, context: { lastComponent?: Result }) =>
+				context.lastComponent ?? { render: () => [result.text] },
 		};
-		return { bash: resolve("bash", () => base)!, other: resolve("read", () => "read renderers") };
+		return resolver(toolName, () => base)!;
 	}
 
-	it("shows the original command and the monitor id for rewritten calls", async () => {
-		const { h, bash } = setup();
+	it("keeps Pi's own call rendering, because Pi shows the original command", async () => {
+		const { h } = setup();
+		assert.equal(resolve(h).renderCall, "default call renderer");
+	});
+
+	it("tags the result of an intercepted call with its monitor while that monitor runs", async () => {
+		const { h, bash, internals } = setup();
 		await h.fire("session_start", { reason: "startup" });
-		const { input, toolCallId } = await bash("gh run watch 7");
-		const { bash: renderers, other } = resolver(h);
-		const shown = renderers.renderCall(input, theme, { toolCallId });
-		assert.equal(shown.text, "$ gh run watch 7  → monitor m1");
-		const afterRestart = renderers.renderCall(input, theme, { toolCallId: "unknown" });
-		assert.equal(afterRestart.text, "$ gh run watch 7  → monitor m1", "the marker works without the map");
-		assert.equal(renderers.renderCall({ command: "ls" }, theme, { toolCallId: "x" }).text, "$ ls");
-		assert.equal(other, "read renderers");
+		const { toolCallId } = await bash("gh run watch 7");
+		const renderers = resolve(h);
+		const first = renderers.renderResult({ text: "Running in background as m1" }, {}, theme, { toolCallId });
+		assert.deepEqual(first.render(80), ["Running in background as m1", "→ monitor m1"]);
+		const again = renderers.renderResult({ text: "x" }, {}, theme, { toolCallId, lastComponent: first });
+		assert.equal(again, first, "re-renders reuse the component");
+
+		internals().registry.stop("m1");
+		await until(() => internals().registry.get("m1")!.status !== "running");
+		const ended = renderers.renderResult({ text: "done" }, {}, theme, { toolCallId, lastComponent: first });
+		assert.deepEqual(ended.render(80), ["Running in background as m1"], "no tag once the monitor ended");
 		await h.fire("session_shutdown", { reason: "quit" });
+	});
+
+	it("leaves other bash calls and other tools to the next renderer", async () => {
+		const { h } = setup();
+		const plain = resolve(h).renderResult({ text: "ls output" }, {}, theme, { toolCallId: "other" });
+		assert.deepEqual(plain.render(80), ["ls output"]);
+		const resolver = h.renderers["tool"] as (name: string, next: () => unknown) => unknown;
+		assert.equal(
+			resolver("read", () => "read renderers"),
+			"read renderers",
+		);
+	});
+});
+
+describe("result text tells the model what happened", () => {
+	const namesMonitorInBackground = (text: string) => {
+		assert.match(text, /\bm\d+\b/, `names the monitor id: ${text}`);
+		assert.match(text, /background/i, `says it runs in the background: ${text}`);
+		assert.doesNotMatch(text, /pi-monitor:|^#/m, `no marker or comment lines: ${text}`);
+	};
+
+	for (const command of [
+		"gh run watch 123",
+		"gh pr checks 42 --watch",
+		"sleep 30 && echo done",
+		"tail -f app.log | grep --line-buffered ERROR",
+	]) {
+		it(`a rewritten "${command}" result names the monitor and says it runs in the background`, async () => {
+			const { h, bash } = setup();
+			await h.fire("session_start", { reason: "startup" });
+			const { input } = await bash(command);
+			namesMonitorInBackground(await sh(input.command));
+			await h.fire("session_shutdown", { reason: "quit" });
+		});
+	}
+
+	it("a classifier-backgrounded result names the monitor and says it runs in the background", async () => {
+		const fake = fakeClassifierRegistry(() => ({ choice: "background" }));
+		const { h, bash } = setup({ modelRegistry: fake.registry });
+		await h.fire("session_start", { reason: "startup" });
+		const { input } = await bash("npm run dev");
+		namesMonitorInBackground(await sh(input.command));
+		await h.fire("session_shutdown", { reason: "quit" });
+	});
+
+	it("a safety-net result for a command still running names the monitor and says it moved to the background", async () => {
+		const { h, bash } = setup({ settings: { backgroundAfterSeconds: 1 } });
+		await h.fire("session_start", { reason: "startup" });
+		const { input } = await bash("sh -c 'echo listening; sleep 5' # dev server");
+		const text = await sh(input.command);
+		assert.match(text, /^listening\nStill running after 1s\. Moved to background as m1 /);
+		namesMonitorInBackground(text.split("\n")[1]!);
+		await h.fire("session_shutdown", { reason: "quit" });
+	});
+
+	it("a safety-net result for a command that ended in time is just its output", async () => {
+		const { h, bash } = setup({ settings: { backgroundAfterSeconds: 5 } });
+		await h.fire("session_start", { reason: "startup" });
+		const { input } = await bash("sh -c 'echo built' # deploy");
+		assert.equal(await sh(input.command), "built\n");
 	});
 });
 

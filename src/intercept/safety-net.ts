@@ -125,7 +125,7 @@ export class SafetyNet {
 				movedText,
 				...(timeoutSeconds ? { timeoutSeconds } : {}),
 			},
-			{ id, command },
+			id,
 		);
 		return { id, script };
 	}
