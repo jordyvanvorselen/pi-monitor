@@ -2,7 +2,7 @@
 
 Watch long-running things in the background from [pi](https://github.com/earendil-works/pi-coding-agent): GitHub Actions runs, pull request checks, dev servers, builds, log files, URLs and processes. Pi keeps working or goes idle, and wakes up only when something worth knowing happens.
 
-Without this extension a model waits with `sleep 60 && gh run view …` loops or a blocking `gh run watch`. That blocks the session and burns tokens on every poll. With pi-monitor the model starts a monitor, gets an answer in milliseconds and moves on. Progress goes to the screen, not to the model. The model hears about the end, and about failures right away.
+Without this extension a model waits with `sleep 60 && gh run view …` loops or a blocking `gh run watch`. That blocks the session and burns tokens on every poll. With pi-monitor those waits move to the background: the model starts a monitor, or just runs the command and pi-monitor moves it. Either way it gets an answer in milliseconds and moves on. Progress goes to the screen, not to the model. The model hears about the end, and about failures right away.
 
 ## Quick start
 
@@ -55,7 +55,7 @@ GitHub sources need the [GitHub CLI](https://cli.github.com) (`gh`), logged in w
 
 ## The tools
 
-The model gets two tools. Pi adds two short guideline lines to the system prompt while the tools are active, telling the model to start a monitor instead of sleeping or polling in bash.
+The model gets two tools. Pi adds three short guideline lines to the system prompt while the tools are active: long commands are fine in bash because pi-monitor moves them to the background, and `monitor` gives explicit control.
 
 ### `monitor`
 
@@ -114,9 +114,23 @@ Opens an overlay with all monitors of the session, a per-job timeline of the sel
 | `s`   | Stop the selected monitor                                    |
 | esc   | Close                                                        |
 
-## Blocking waits
+## Long commands in bash
 
-By default pi-monitor blocks three things in `bash` and points the model to `monitor` instead: `gh run watch`, `gh pr checks --watch` and `sleep` longer than 20 seconds. One blocked call costs about 50 tokens and usually teaches the model for the rest of the session. Set `blockBlockingWaits` to `false` to allow them.
+The model does not have to use `monitor` at all. pi-monitor looks at every `bash` call and moves waits and long-running commands to the background, so pi never sits blocked:
+
+- **Known waits** become monitors at once: `gh run watch <id>`, `gh pr checks <pr> --watch`, `sleep 40 && <command>` (a timer that runs the command later and reports its output) and `tail -f <file>`, optionally piped through a simple `grep`. The model gets `Running in background as m3 (…). You will be notified when it ends.`
+- **Obviously short commands** like `ls`, `cat`, `rg`, `jq` and `git status` run as usual.
+- **Everything else** is a suspect. If you have a [classifier model](https://github.com/earendil-works/pi-coding-agent/blob/main/packages/coding-agent/docs/models.md#use-classifier-models) configured, pi-monitor asks it whether the command finishes on its own. Without one it guesses from keywords such as `dev`, `serve`, `watch`, `deploy`, `--follow` or `docker compose up`. A clear "short" runs as usual. A clear "background" becomes a monitor right away.
+- **Unsure commands** go to the safety net. pi-monitor runs the command itself and bash waits for it. If it ends within 30 seconds, the model gets its output and exit code as usual. If it is still running, the model gets the output so far and `Still running after 30s. Moved to background as m4 (…). You will be notified when it ends.` The command keeps running as a monitor. A `timeout` on the bash call is respected.
+
+In the transcript, rewritten calls show the original command with `→ monitor m3`.
+
+Things to know:
+
+- The safety net runs the command in a separate shell, with Pi's `shellPath` and `shellCommandPrefix` settings. Like any bash call in pi, `cd` and `export` do not carry over to the next call.
+- Commands moved to the background end when pi exits. A monitor started this way times out after four hours.
+- Only interactive and RPC sessions are intercepted. In print and JSON mode nothing would receive the later message, so bash runs as usual.
+- Set `PI_MONITOR_INTERCEPT=0` to turn the interceptor off. If anything goes wrong inside it, the command runs unchanged and the error goes to `<tmp>/pi-monitor/interceptor.log`.
 
 ## Sessions and logs
 
@@ -135,7 +149,8 @@ Add a `"monitor"` section to `~/.pi/agent/settings.json` for user-wide settings,
   "monitor": {
     "maxConcurrent": 5,
     "defaultTimeoutMinutes": 30,
-    "blockBlockingWaits": true,
+    "backgroundAfterSeconds": 30,
+    "classifier": "typesafe/jev-latest",
     "desktopNotifications": true,
     "reducedMotion": false,
     "dock": "card",
@@ -144,15 +159,16 @@ Add a `"monitor"` section to `~/.pi/agent/settings.json` for user-wide settings,
 }
 ```
 
-| Key                     | Default          | Meaning                                                                |
-| ----------------------- | ---------------- | ---------------------------------------------------------------------- |
-| `maxConcurrent`         | `5`              | Monitors that may run at the same time.                                |
-| `defaultTimeoutMinutes` | `30`             | Timeout when the model gives none. At most 240.                        |
-| `blockBlockingWaits`    | `true`           | Block `gh run watch`, `gh pr checks --watch` and long `sleep` in bash. |
-| `desktopNotifications`  | `true`           | Send a terminal desktop notification when a monitor ends.              |
-| `reducedMotion`         | `false`          | No spinner and no flash. Clocks still update once a second.            |
-| `dock`                  | `"card"`         | How the dock starts: `"card"`, `"line"` or `"hidden"`.                 |
-| `shortcut`              | `"ctrl+shift+m"` | Key that cycles the dock. Read at startup.                             |
+| Key                      | Default          | Meaning                                                                                              |
+| ------------------------ | ---------------- | ---------------------------------------------------------------------------------------------------- |
+| `maxConcurrent`          | `5`              | Monitors that may run at the same time.                                                              |
+| `defaultTimeoutMinutes`  | `30`             | Timeout when the model gives none. At most 240.                                                      |
+| `backgroundAfterSeconds` | `30`             | The safety net moves a bash command that is still running after this many seconds to the background. |
+| `classifier`             | first available  | Classifier the interceptor asks, as `provider/id`.                                                   |
+| `desktopNotifications`   | `true`           | Send a terminal desktop notification when a monitor ends.                                            |
+| `reducedMotion`          | `false`          | No spinner and no flash. Clocks still update once a second.                                          |
+| `dock`                   | `"card"`         | How the dock starts: `"card"`, `"line"` or `"hidden"`.                                               |
+| `shortcut`               | `"ctrl+shift+m"` | Key that cycles the dock. Read at startup.                                                           |
 
 ## Modes
 
