@@ -283,7 +283,13 @@ export class Registry {
 					this.deps.onChange();
 				},
 				update: (progress) => {
-					if (progress.url && progress.url !== record.progress.url && /\/actions\/runs\/\d+/.test(progress.url))
+					const latest = spec.kind === "gh_run" && spec.target === "latest";
+					if (
+						latest &&
+						progress.url &&
+						progress.url !== record.progress.url &&
+						/\/actions\/runs\/\d+/.test(progress.url)
+					)
 						this.deps.persist({ kind: "resolve", id: record.id, target: progress.url });
 					record.progress = { ...record.progress, ...progress };
 					this.deps.onChange();
