@@ -38,7 +38,7 @@ A dock appears above the editor:
 │ ✗ e2e on staging exited with code 1 after 8m16s                                              │
 │ ⠹ dev server  ▁▁▂▅▇▅▂▁  last: GET /api/users 200 in 12ms · 12s ago   pi is on it ↳  10m00s │
 │ ⠹ CI #42  ●━━●━━◐┄┄○┄┄○  test ▸ Run unit tests                         ▰▰▰▱▱ ~1m  4m10s │
-╰──────────────────────────────────────────────────────────── ctrl+shift+m view · /monitors ─╯
+╰──────────────────────────────────────────────────────────── ───────── ctrl+shift+m details ─╯
 ```
 
 When a job fails, the model gets one short message with the tail of the failed log:
@@ -103,8 +103,9 @@ Messages are short. Lines that arrive within half a second are batched, at most 
 - **Dock above the editor.** One row per monitor. GitHub rows show a job track (`●` done, `◐` running, `○` queued, `✗` failed), the current job and step, an ETA bar based on the median of the last ten green runs of the same workflow, and the elapsed time. The run name links to GitHub. Other rows show a sparkline of output per 10 seconds and the last line with its age. A source that stays silent for five minutes turns into a warning `quiet 5m`. `pi is on it ↳` shows while the model handles a message from that monitor.
 - **Moments.** A finished row flashes green or red, collapses to `✓ CI #42 green in 6m02s` and disappears after 10 seconds. The terminal title shows `⠹ pi · CI 3/5`, then `✓ CI green` or `✗ CI failed`. A desktop notification goes out when a monitor ends, in terminals that support OSC 9, 99 or 777.
 - **Savings meter.** The dock estimates the tokens saved compared to a polling loop: one poll per 30 seconds at about 200 tokens, minus what pi-monitor actually delivered. It ignores the cost of re-reading the context on every poll, so the real saving is higher.
-- **Responsive.** Narrow terminals get compact rows like `⠹ CI #42 3/5 4m`. While pi is streaming the dock folds into one line: `◉ 3 monitors · CI #42 3/5 · e2e ✗`. More than four monitors show the three most important (failures first) and `+2 more`.
-- **`ctrl+shift+m`** cycles the dock: card, one line, hidden. When hidden, the footer shows `◉ 2 monitors`. The key needs a terminal with the kitty keyboard protocol (kitty, Ghostty, WezTerm, recent iTerm2). Set `shortcut` to `"alt+m"` for other terminals.
+- **Always the full card.** The dock shows whenever monitors exist, also while pi is working, and disappears when there are none. Narrow terminals get compact rows like `⠹ CI #42 3/5 4m`. More than four monitors show the three most important (failures first) and `+2 more`.
+- **Bash commands on probation.** While the safety net waits to see whether a command ends, its row shows at once: `⏳ yarn dev  ▁▂▅  last: … · 2s ago   background in 9s`. If the command ends in time the row disappears quietly. If not, it becomes a normal running row.
+- **`ctrl+shift+m`** opens `/monitors`; press it again or `esc` to close. The key needs a terminal with the kitty keyboard protocol (kitty, Ghostty, WezTerm, recent iTerm2). Set `shortcut` to `"alt+m"` for other terminals.
 
 ### `/monitors`
 
@@ -157,7 +158,6 @@ Add a `"monitor"` section to `~/.pi/agent/settings.json` for user-wide settings,
     "classifier": "typesafe/jev-latest",
     "desktopNotifications": true,
     "reducedMotion": false,
-    "dock": "card",
     "shortcut": "ctrl+shift+m"
   }
 }
@@ -171,8 +171,7 @@ Add a `"monitor"` section to `~/.pi/agent/settings.json` for user-wide settings,
 | `classifier`             | first available  | Classifier the interceptor asks, as `provider/id`.                                                   |
 | `desktopNotifications`   | `true`           | Send a terminal desktop notification when a monitor ends.                                            |
 | `reducedMotion`          | `false`          | No spinner and no flash. Clocks still update once a second.                                          |
-| `dock`                   | `"card"`         | How the dock starts: `"card"`, `"line"` or `"hidden"`.                                               |
-| `shortcut`               | `"ctrl+shift+m"` | Key that cycles the dock. Read at startup.                                                           |
+| `shortcut`               | `"ctrl+shift+m"` | Key that opens and closes `/monitors`. Read at startup.                                              |
 
 ## Modes
 
