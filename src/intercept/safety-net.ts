@@ -70,7 +70,10 @@ export class SafetyNet {
 				cwd,
 				reportOutput: true,
 			},
-			{ source: commandSource({ kind: "child", child, label: command, reportOutput: true }), hidden: true },
+			{
+				source: commandSource({ kind: "child", child, label: command, reportOutput: true }),
+				probationUntil: Date.now() + deadlineMs,
+			},
 		);
 
 		const statusPath = join(dir, `${id}.status`);

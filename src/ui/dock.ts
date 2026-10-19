@@ -19,6 +19,8 @@ export interface DockItem {
 	lastLineAt?: number;
 	activity: ActivityBucket[];
 	handling: boolean;
+	/** Safety-net probation: moves to the background at this time unless it ends first. */
+	probationUntil?: number;
 }
 
 export interface DockOptions {
@@ -104,7 +106,11 @@ function finishedRow(item: DockItem, width: number, options: DockOptions, paint:
 	return fit(`${paint.fg(color, glyph)} ${paint.fg("muted", text)}`, right, width);
 }
 
+/** Glyph of a bash command the safety net may still hand back. */
+export const PROBATION_GLYPH = "⏳";
+
 function runningGlyph(item: DockItem, options: DockOptions, paint: Paint): string {
+	if (item.probationUntil !== undefined) return PROBATION_GLYPH;
 	if (item.paused) return paint.fg("warning", "‖");
 	return paint.fg(hasFailure(item) ? "error" : "accent", spinner(options.frame, options.reducedMotion));
 }
@@ -146,6 +152,10 @@ function runningRow(item: DockItem, width: number, options: DockOptions, paint: 
 	const jobs = item.progress.jobs;
 	const isGh = item.kind === "gh_run" || item.kind === "gh_pr";
 	const stale = item.lastLineAt !== undefined && now - item.lastLineAt >= STALE_MS;
+	const countdown =
+		item.probationUntil !== undefined
+			? formatShortDuration(Math.max(0, Math.ceil((item.probationUntil - now) / 1000) * 1000))
+			: undefined;
 
 	if (width < MEDIUM) {
 		const parts = [glyph, name];
@@ -153,7 +163,7 @@ function runningRow(item: DockItem, width: number, options: DockOptions, paint: 
 			const { done, total, failed } = jobCounts(jobs);
 			parts.push(paint.fg(failed ? "error" : "muted", `${done}/${total}`));
 		}
-		parts.push(paint.fg("muted", formatShortDuration(elapsed)));
+		parts.push(countdown ? paint.fg("dim", `bg in ${countdown}`) : paint.fg("muted", formatShortDuration(elapsed)));
 		if (!isGh && stale) parts.push(age(now - item.lastLineAt!, paint));
 		if (item.handling) parts.push(paint.fg("accent", "↳"));
 		return truncateToWidth(parts.join(" "), width, "…", true);
@@ -163,7 +173,7 @@ function runningRow(item: DockItem, width: number, options: DockOptions, paint: 
 	const right: string[] = [];
 	if (item.handling) right.push(paint.fg("accent", "pi is on it ↳"));
 	if (wide && isGh && item.progress.etaMs) right.push(etaBar(elapsed, item.progress.etaMs, paint));
-	right.push(paint.fg("muted", formatDuration(elapsed)));
+	right.push(countdown ? paint.fg("dim", `background in ${countdown}`) : paint.fg("muted", formatDuration(elapsed)));
 	const rightText = right.join("  ");
 
 	if (isGh) {

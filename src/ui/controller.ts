@@ -106,7 +106,7 @@ export class UiController {
 	}
 
 	ended(record: MonitorRecord): void {
-		if (!this.ctx || record.hidden) return;
+		if (!this.ctx || record.probationUntil !== undefined) return;
 		this.changed(true);
 		if (!this.deps.settings().desktopNotifications) return;
 		if (record.status !== "success" && record.status !== "failure" && record.status !== "timeout") return;

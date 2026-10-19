@@ -50,7 +50,7 @@ describe("safety net", () => {
 	it("hands back the output and exit code of a command that ends in time, and leaves no monitor", async () => {
 		const { registry, net } = setup();
 		const { id, script } = net.start("call-1", "echo building; sleep 0.05; echo oops >&2; exit 3", tmpdir());
-		assert.equal(registry.get(id)!.hidden, true, "hidden while bash still waits");
+		assert.ok(registry.get(id)!.probationUntil !== undefined, "on probation while bash still waits");
 		const result = await runScript(script);
 		assert.equal(result.code, 3);
 		assert.equal(result.stdout, "building\noops\n");
@@ -70,7 +70,7 @@ describe("safety net", () => {
 		assert.ok(result.ms < 2000, `returned after ${result.ms} ms`);
 		net.toolEnded("call-1");
 		const record = registry.get(id)!;
-		assert.equal(record.hidden, false);
+		assert.equal(record.probationUntil, undefined);
 		assert.equal(record.wake, "final");
 		await until(() => sent.length > 0, 5000);
 		assert.match(sent[0]!.content, /done: exited 0 after 2s\noutput:\n {2}started\n {2}finished$/);

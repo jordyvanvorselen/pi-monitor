@@ -52,8 +52,11 @@ export interface MonitorRecord extends Target {
 	activity: ActivityBucket[];
 	/** The model is handling an event from this monitor. */
 	handling: boolean;
-	/** Not shown in the UI yet, e.g. a bash command the safety net may still hand back. */
-	hidden: boolean;
+	/**
+	 * A bash command on probation: the safety net hands it back to bash if it ends before this time.
+	 * Shown while it runs; if it ends on probation it disappears quietly.
+	 */
+	probationUntil?: number;
 	/** Set when something stopped the monitor before its source ended. */
 	stopReason?: StopReason;
 	/** The end entry is already written (session shutdown). */
@@ -97,8 +100,8 @@ export class MonitorLimitError extends Error {}
 export interface StartOptions {
 	/** Use this source instead of building one from the spec, e.g. an adopted child process. */
 	source?: Source;
-	/** Start without showing it in the UI. */
-	hidden?: boolean;
+	/** Start on probation until this time (safety net). */
+	probationUntil?: number;
 }
 
 export class Registry {
@@ -120,16 +123,16 @@ export class Registry {
 		return [...this.monitors.values()];
 	}
 
-	/** Monitors the UI shows. */
+	/** Monitors the UI shows: everything except commands that ended on probation (bash got their result). */
 	visible(): MonitorRecord[] {
-		return this.list().filter((m) => !m.hidden);
+		return this.list().filter((m) => m.probationUntil === undefined || m.status === "running");
 	}
 
-	/** Show a hidden monitor and let it wake the model, e.g. when the safety net moves a command to the background. */
+	/** End probation and let the monitor wake the model, when the safety net moves a command to the background. */
 	reveal(id: string, wake: WakeLevel): void {
 		const record = this.monitors.get(id);
 		if (!record) return;
-		record.hidden = false;
+		delete record.probationUntil;
 		record.wake = wake;
 		record.log.append(`# moved to the background, wake: ${wake}`);
 		this.deps.onChange();
@@ -177,7 +180,7 @@ export class Registry {
 			progress: {},
 			activity: [],
 			handling: false,
-			hidden: options.hidden ?? false,
+			...(options.probationUntil !== undefined ? { probationUntil: options.probationUntil } : {}),
 			deliveredTokens: 0,
 			log,
 			controller: new AbortController(),
@@ -247,7 +250,6 @@ export class Registry {
 			progress: {},
 			activity: [],
 			handling: false,
-			hidden: false,
 			deliveredTokens: 0,
 			log: new MonitorLog(""),
 			controller: new AbortController(),
@@ -291,7 +293,7 @@ export class Registry {
 	savedTokens(now = this.clock.now()): number {
 		let total = 0;
 		for (const record of this.monitors.values()) {
-			if (record.wake === "never" || record.status === "ended" || record.hidden) continue;
+			if (record.wake === "never" || record.status === "ended" || record.probationUntil !== undefined) continue;
 			total += savedTokens((record.endedAt ?? now) - record.startedAt, record.deliveredTokens);
 		}
 		return total;

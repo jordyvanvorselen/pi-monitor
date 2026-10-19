@@ -46,6 +46,11 @@ describe("terminal title", () => {
 		assert.equal(monitorTitle([ci], NOW, 2, true), "◉ pi · CI 3/5");
 	});
 
+	it("leaves the title alone for commands on probation", () => {
+		const probation = item({ id: "m1", kind: "command", status: "running", probationUntil: NOW + 5_000 });
+		assert.equal(monitorTitle([probation], NOW, 0, false), undefined);
+	});
+
 	it("shows the result for a few seconds, then gives the title back", () => {
 		const done = item({
 			id: "m1",

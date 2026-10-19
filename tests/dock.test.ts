@@ -195,6 +195,44 @@ describe("dock card", () => {
 	});
 });
 
+describe("probation rows", () => {
+	const probation = item({
+		id: "m3",
+		kind: "command",
+		status: "running",
+		description: "yarn dev",
+		startedAt: NOW - 21_000,
+		probationUntil: NOW + 8_200,
+		lastLine: "ready in 420 ms",
+		lastLineAt: NOW - 2_000,
+		activity: [{ bucket: bucket(0), count: 3 }],
+	});
+
+	it("shows a bash command on probation at once, with a countdown to the background", () => {
+		const row = plain(renderDock([probation], options(), plainTheme))[1]!;
+		assert.match(row, /^│ ⏳ yarn dev {2}▁+█ {2}last: ready in 420 ms · 2s ago +background in 9s │$/);
+	});
+
+	it("dims the countdown", () => {
+		assert.match(renderDock([probation], options({ width: 400 }), tagTheme)[1]!, /<dim>background in 9s<\/dim>/);
+	});
+
+	it("keeps probation rows exactly as wide as the terminal at several widths", () => {
+		for (const width of [160, 120, 80, 56, 50, 40, 30]) {
+			const lines = renderDock([probation, ci], options({ width }), plainTheme);
+			for (const line of lines) assert.equal(visibleWidth(line), width, `width ${width}: ${line}`);
+		}
+	});
+
+	it("uses a short countdown in narrow rows", () => {
+		assert.match(plain(renderDock([probation], options({ width: 50 }), plainTheme))[1]!, /^│ ⏳ yarn dev bg in 9s +│$/);
+	});
+
+	it("counts probation rows as running in the summary", () => {
+		assert.match(plain(renderDock([probation, ci], options(), plainTheme))[0]!, / 2 running /);
+	});
+});
+
 describe("dock never folds", () => {
 	it("shows the full card for any number of monitors at normal widths", () => {
 		const failed = item({ id: "e2e", kind: "command", status: "failure", endedAt: NOW - 2_000, summary: "exit 1" });

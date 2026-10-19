@@ -16,7 +16,8 @@ export function monitorTitle(
 	frame: number,
 	reducedMotion: boolean,
 ): string | undefined {
-	const running = byImportance(items.filter((i) => i.status === "running"));
+	// Commands on probation may still end within seconds and hand their result to bash. Leave the title alone.
+	const running = byImportance(items.filter((i) => i.status === "running" && i.probationUntil === undefined));
 	const top = running[0];
 	if (top) {
 		const jobs = top.progress.jobs;

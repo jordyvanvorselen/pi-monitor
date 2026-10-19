@@ -384,3 +384,56 @@ describe("ctrl+shift+m toggles /monitors", () => {
 		assert.equal(opened.length, 3, "escape also resets the toggle");
 	});
 });
+
+describe("probation in the UI", () => {
+	function withUi() {
+		const titles: string[] = [];
+		const notified: string[] = [];
+		let widget: ((tui: unknown, theme: unknown) => { render(width: number): string[] }) | undefined;
+		const probationUi = {
+			...ui,
+			setTitle: (title: string) => titles.push(title),
+			setWidget: (_key: string, content: typeof widget) => (widget = content),
+		};
+		let internals: { registry: Registry } | undefined;
+		const h = harness({
+			ui: probationUi,
+			overrides: {
+				env: {},
+				notify: (title, body) => notified.push(`${title}: ${body}`),
+				expose: (i) => (internals = i),
+			},
+		});
+		mkdirSync(join(h.cwd, ".pi"), { recursive: true });
+		writeFileSync(join(h.cwd, ".pi", "settings.json"), JSON.stringify({ monitor: { backgroundAfterSeconds: 2 } }));
+		const render = () => (widget ? widget({ requestRender: () => {} }, plainTheme).render(120) : []);
+		return { h, titles, notified, render, registry: () => internals!.registry };
+	}
+
+	it("shows a probation row at once and removes it quietly when the command ends in time", async () => {
+		const { h, titles, notified, render, registry } = withUi();
+		await h.fire("session_start", { reason: "startup" });
+		const input = { command: "sh -c 'sleep 0.3; echo built' # deploy" };
+		await h.fire("tool_call", { toolName: "bash", toolCallId: "c1", input });
+		assert.match(render().join("\n"), /⏳ sh -c 'sleep 0\.3; echo built' # deploy .*background in 2s/);
+		assert.equal(await sh(input.command), "built\n");
+		await until(() => registry().get("m1") === undefined);
+		assert.deepEqual(render(), [], "no flash or finished row");
+		assert.deepEqual(notified, []);
+		assert.equal(titles.filter((t) => /✓|✗/.test(t)).length, 0, "no title moment");
+		assert.equal(registry().savedTokens(), 0);
+	});
+
+	it("turns a probation row into a normal running row when the command moves to the background", async () => {
+		const { h, render, registry } = withUi();
+		await h.fire("session_start", { reason: "startup" });
+		const input = { command: "sh -c 'echo listening; sleep 30' # dev server" };
+		await h.fire("tool_call", { toolName: "bash", toolCallId: "c1", input });
+		await sh(input.command);
+		await until(() => registry().get("m1")!.probationUntil === undefined);
+		const row = render().find((l) => l.includes("dev server"))!;
+		assert.doesNotMatch(row, /⏳|background in/);
+		assert.match(row, /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/);
+		await h.fire("session_shutdown", { reason: "quit" });
+	});
+});
