@@ -51,7 +51,7 @@ export function prepareMonitorArgs(raw: unknown): MonitorInput {
 }
 
 /** Turn tool input into a spec. Throws with a message for the model when the input is wrong. */
-export function specFromInput(input: MonitorInput, defaultTimeoutMinutes: number): MonitorSpec {
+export function specFromInput(input: MonitorInput, defaultTimeoutMinutes: number, cwd: string): MonitorSpec {
 	const given = SOURCE_KEYS.filter((key) => input[key] !== undefined);
 	if (given.length !== 1)
 		throw new Error(
@@ -73,6 +73,9 @@ export function specFromInput(input: MonitorInput, defaultTimeoutMinutes: number
 		target: String(input[kind]).trim(),
 		wake,
 		timeoutMinutes: timeout,
+		cwd,
+		// With wake "final" the model hears nothing until the end, so the end carries the output.
+		reportOutput: kind === "command" && wake === "final",
 	};
 	if (input.match !== undefined) spec.match = input.match;
 	return spec;

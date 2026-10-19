@@ -10,7 +10,7 @@ import { urlSource } from "./url.ts";
 export function buildSource(spec: MonitorSpec): Source {
 	switch (spec.kind) {
 		case "command":
-			return commandSource({ kind: "spawn", command: spec.target, reportOutput: spec.reportOutput ?? false });
+			return commandSource({ kind: "spawn", command: spec.target, reportOutput: spec.reportOutput === true });
 		case "gh_run":
 			return ghRunSource(spec.target);
 		case "gh_pr":

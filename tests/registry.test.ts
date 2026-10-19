@@ -37,6 +37,8 @@ describe("startMonitor", () => {
 			target: "echo ok",
 			wake: "final",
 			timeoutMinutes: 5,
+			cwd: "",
+			reportOutput: false,
 		});
 		assert.equal(started.id, "m1");
 		assert.equal(
@@ -61,6 +63,7 @@ describe("startMonitor", () => {
 			wake: "never",
 			timeoutMinutes: 5,
 			cwd,
+			reportOutput: false,
 		});
 		await until(() => record.status !== "running");
 		assert.equal(record.lastLine, cwd);
@@ -68,10 +71,26 @@ describe("startMonitor", () => {
 
 	it("refuses to start beyond maxConcurrent", () => {
 		const { reg } = registry(1);
-		startMonitor(reg, { description: "a", kind: "command", target: "sleep 30", wake: "never", timeoutMinutes: 5 });
+		startMonitor(reg, {
+			description: "a",
+			kind: "command",
+			target: "sleep 30",
+			wake: "never",
+			timeoutMinutes: 5,
+			cwd: "",
+			reportOutput: false,
+		});
 		assert.throws(
 			() =>
-				startMonitor(reg, { description: "b", kind: "command", target: "sleep 30", wake: "never", timeoutMinutes: 5 }),
+				startMonitor(reg, {
+					description: "b",
+					kind: "command",
+					target: "sleep 30",
+					wake: "never",
+					timeoutMinutes: 5,
+					cwd: "",
+					reportOutput: false,
+				}),
 			MonitorLimitError,
 		);
 		reg.stopAll();

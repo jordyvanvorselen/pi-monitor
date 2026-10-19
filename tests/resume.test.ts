@@ -5,13 +5,23 @@ import { planResume } from "../src/resume.ts";
 import { harness } from "./harness.ts";
 import { until } from "./helpers.ts";
 
-const ghSpec: MonitorSpec = { description: "CI", kind: "gh_run", target: "latest", wake: "final", timeoutMinutes: 30 };
+const ghSpec: MonitorSpec = {
+	description: "CI",
+	kind: "gh_run",
+	target: "latest",
+	wake: "final",
+	timeoutMinutes: 30,
+	cwd: "/repo",
+	reportOutput: false,
+};
 const cmdSpec: MonitorSpec = {
 	description: "server",
 	kind: "command",
 	target: "npm run dev",
 	wake: "events",
 	timeoutMinutes: 30,
+	cwd: "/repo",
+	reportOutput: false,
 };
 
 const entry = (data: MonitorEntry) => ({ type: "custom", customType: "monitor-state", data });

@@ -58,6 +58,7 @@ function specFor(
 				wake: "final",
 				timeoutMinutes: timeoutMinutes(defaultTimeout, timeoutSeconds),
 				cwd,
+				reportOutput: false,
 			};
 		case "timer":
 			return {
@@ -81,6 +82,7 @@ function specFor(
 				wake: "events",
 				timeoutMinutes: timeoutMinutes(MAX_TIMEOUT_MINUTES, timeoutSeconds),
 				cwd,
+				reportOutput: false,
 				...(pattern.match ? { match: pattern.match } : {}),
 			};
 	}

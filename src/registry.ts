@@ -15,10 +15,10 @@ export interface MonitorSpec {
 	match?: string;
 	wake: WakeLevel;
 	timeoutMinutes: number;
-	/** Working directory. Defaults to the session cwd. */
-	cwd?: string;
+	/** Working directory. */
+	cwd: string;
 	/** Command monitors: include the last output in the success message too. */
-	reportOutput?: boolean;
+	reportOutput: boolean;
 }
 
 /** `ended` = a command watcher that did not survive a session restart. */
@@ -307,7 +307,7 @@ export class Registry {
 		try {
 			outcome = await source.start({
 				signal,
-				cwd: spec.cwd ?? this.deps.cwd(),
+				cwd: spec.cwd || this.deps.cwd(),
 				run: this.deps.run,
 				now: () => this.clock.now(),
 				sleep: (ms) => abortableSleep(ms, signal),

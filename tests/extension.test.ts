@@ -29,6 +29,24 @@ describe("extension wiring", () => {
 		assert.match(readFileSync(logPath, "utf8"), /hello/);
 	});
 
+	it("stores cwd and the reporting mode in the spec of tool-started monitors, like intercepted ones", async () => {
+		const h = harness();
+		await h.fire("session_start", { reason: "startup" });
+		await h.call("monitor", { description: "build", command: "true", wake: "final" });
+		await h.call("monitor", { description: "server", command: "true" });
+		await h.call("monitor", { description: "this process", pid: process.pid });
+		const specs = h.entries.filter((e) => e.data.kind === "start").map((e) => e.data.spec as Record<string, unknown>);
+		assert.deepEqual(
+			specs.map((s) => [s.description, s.cwd, s.reportOutput]),
+			[
+				["build", h.cwd, true],
+				["server", h.cwd, false],
+				["this process", h.cwd, false],
+			],
+		);
+		await h.fire("session_shutdown", { reason: "quit" });
+	});
+
 	it("records start and end entries for resume", async () => {
 		const h = harness();
 		await h.fire("session_start", { reason: "startup" });

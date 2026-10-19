@@ -132,7 +132,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		prepareArguments: prepareMonitorArgs,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			ctxRef = ctx;
-			const spec = specFromInput(params, settings.defaultTimeoutMinutes);
+			const spec = specFromInput(params, settings.defaultTimeoutMinutes, ctx.cwd);
 			const { text, record } = startMonitor(registry, spec);
 			return {
 				content: [{ type: "text", text }],
