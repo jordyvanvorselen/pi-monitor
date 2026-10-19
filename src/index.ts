@@ -166,61 +166,86 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 
 	pi.registerToolRenderer(bashRenderer((toolCallId) => interceptor.monitorFor(toolCallId)));
 
+	/** Closes the open /monitors overlay, if any. */
+	let closeOverlay: (() => void) | undefined;
+
+	/** Open /monitors, or close it when it is already open. */
+	const toggleOverlay = async (ctx: ExtensionContext) => {
+		if (closeOverlay) return closeOverlay();
+		if (ctx.mode !== "tui") {
+			const lines = registry
+				.list()
+				.map(
+					(m) =>
+						`${m.id} ${m.status} ${m.description} · ${m.summary ?? formatDuration(clock.now() - m.startedAt)} · ${m.logPath}`,
+				);
+			ctx.ui.notify(lines.length ? lines.join("\n") : "No monitors in this session.", "info");
+			return;
+		}
+		await ctx.ui.custom<void>(
+			(tui, theme, _keybindings, done) => {
+				const unsubscribe = ui.subscribe(() => tui.requestRender());
+				let closed = false;
+				const close = () => {
+					if (closed) return;
+					closed = true;
+					closeOverlay = undefined;
+					done();
+				};
+				closeOverlay = close;
+				return new MonitorsOverlay(
+					{
+						items: () => registry.visible(),
+						stop: (id) => {
+							const record = registry.get(id);
+							if (!record || !registry.stop(id, "user")) return;
+							// Tell the model without waking it: it reads this with its next turn.
+							pi.sendMessage(
+								{
+									customType: CUSTOM_TYPE,
+									content: `[monitor ${id} "${record.description}"] stopped by the user.`,
+									display: true,
+									details: {
+										id,
+										description: record.description,
+										kind: "final",
+										status: "stopped",
+										summary: "stopped by the user",
+									} satisfies MonitorMessageDetails,
+								},
+								{ deliverAs: "nextTurn" },
+							);
+						},
+						open: openExternal,
+						now: () => clock.now(),
+						frame: () => ui.currentFrame(),
+						reducedMotion: () => settings.reducedMotion,
+						savedTokens: () => registry.savedTokens(),
+						rows: () => tui.terminal.rows,
+						close,
+						closeKey: settings.shortcut,
+						requestRender: () => tui.requestRender(),
+						dispose: () => {
+							unsubscribe();
+							if (closeOverlay === close) closeOverlay = undefined;
+						},
+					},
+					theme,
+				);
+			},
+			{ overlay: true, overlayOptions: { anchor: "center", width: "90%", minWidth: 40, maxHeight: "85%" } },
+		);
+	};
+
 	pi.registerCommand("monitors", {
 		description: "Monitors: timeline, live log, open in browser, stop",
-		handler: async (_args, ctx) => {
-			if (ctx.mode !== "tui") {
-				const lines = registry
-					.list()
-					.map(
-						(m) =>
-							`${m.id} ${m.status} ${m.description} · ${m.summary ?? formatDuration(clock.now() - m.startedAt)} · ${m.logPath}`,
-					);
-				ctx.ui.notify(lines.length ? lines.join("\n") : "No monitors in this session.", "info");
-				return;
-			}
-			await ctx.ui.custom<void>(
-				(tui, theme, _keybindings, done) => {
-					const unsubscribe = ui.subscribe(() => tui.requestRender());
-					return new MonitorsOverlay(
-						{
-							items: () => registry.visible(),
-							stop: (id) => {
-								const record = registry.get(id);
-								if (!record || !registry.stop(id, "user")) return;
-								// Tell the model without waking it: it reads this with its next turn.
-								pi.sendMessage(
-									{
-										customType: CUSTOM_TYPE,
-										content: `[monitor ${id} "${record.description}"] stopped by the user.`,
-										display: true,
-										details: {
-											id,
-											description: record.description,
-											kind: "final",
-											status: "stopped",
-											summary: "stopped by the user",
-										} satisfies MonitorMessageDetails,
-									},
-									{ deliverAs: "nextTurn" },
-								);
-							},
-							open: openExternal,
-							now: () => clock.now(),
-							frame: () => ui.currentFrame(),
-							reducedMotion: () => settings.reducedMotion,
-							savedTokens: () => registry.savedTokens(),
-							rows: () => tui.terminal.rows,
-							close: () => done(),
-							requestRender: () => tui.requestRender(),
-							dispose: unsubscribe,
-						},
-						theme,
-					);
-				},
-				{ overlay: true, overlayOptions: { anchor: "center", width: "90%", minWidth: 40, maxHeight: "85%" } },
-			);
-		},
+		handler: async (_args, ctx) => toggleOverlay(ctx),
+	});
+
+	// The overlay also closes on this key itself, in case it keeps the focus.
+	pi.registerShortcut(settings.shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+		description: "Open or close /monitors",
+		handler: (ctx) => toggleOverlay(ctx),
 	});
 
 	pi.on("session_start", async (_event, ctx) => {

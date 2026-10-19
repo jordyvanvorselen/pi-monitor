@@ -346,3 +346,41 @@ describe("stopping from /monitors", () => {
 		await h.fire("session_shutdown", { reason: "quit" });
 	});
 });
+
+describe("ctrl+shift+m toggles /monitors", () => {
+	function withOverlay() {
+		const opened: { handleInput(data: string): void }[] = [];
+		let closes = 0;
+		const custom = async (factory: (...args: unknown[]) => { handleInput(data: string): void }) => {
+			opened.push(factory({ requestRender: () => {}, terminal: { rows: 40 } }, plainTheme, {}, () => closes++));
+		};
+		const { h } = setup({ ui: { ...ui, custom } });
+		return { h, opened, closes: () => closes };
+	}
+
+	it("opens the overlay, closes it on the next press and opens it again after that", async () => {
+		const { h, opened, closes } = withOverlay();
+		await h.fire("session_start", { reason: "startup" });
+		const shortcut = h.shortcuts["ctrl+shift+m"]!;
+		await shortcut(h.ctx);
+		assert.equal(opened.length, 1);
+		await shortcut(h.ctx);
+		assert.equal(closes(), 1);
+		assert.equal(opened.length, 1, "the second press closes instead of opening");
+		await shortcut(h.ctx);
+		assert.equal(opened.length, 2);
+	});
+
+	it("closes when the overlay itself receives the shortcut or escape", async () => {
+		const { h, opened, closes } = withOverlay();
+		await h.fire("session_start", { reason: "startup" });
+		await h.shortcuts["ctrl+shift+m"]!(h.ctx);
+		opened[0]!.handleInput("\x1b[109;6u");
+		assert.equal(closes(), 1);
+		await h.commands["monitors"]!("", h.ctx);
+		opened[1]!.handleInput("\x1b");
+		assert.equal(closes(), 2);
+		await h.shortcuts["ctrl+shift+m"]!(h.ctx);
+		assert.equal(opened.length, 3, "escape also resets the toggle");
+	});
+});

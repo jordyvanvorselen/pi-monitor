@@ -1,4 +1,4 @@
-import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth, type Component, type KeyId } from "@earendil-works/pi-tui";
 import { formatDuration } from "../format.ts";
 import type { Job } from "../sources/types.ts";
 import { byImportance, displayName, renderRow, type DockItem, type DockOptions } from "./dock.ts";
@@ -19,6 +19,8 @@ export interface OverlayDeps {
 	savedTokens(): number;
 	rows(): number;
 	close(): void;
+	/** Shortcut that also closes the overlay (the same key opens it). */
+	closeKey?: string;
 	requestRender(): void;
 	/** Called when Pi disposes the overlay. */
 	dispose?(): void;
@@ -85,6 +87,7 @@ export class MonitorsOverlay implements Component {
 
 	handleInput(data: string): void {
 		const item = this.current();
+		if (this.deps.closeKey && matchesKey(data, this.deps.closeKey as KeyId)) return this.deps.close();
 		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || (this.view === "list" && data === "q")) {
 			if (this.view === "log") {
 				this.view = "list";
