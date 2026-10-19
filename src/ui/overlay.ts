@@ -121,7 +121,7 @@ export class MonitorsOverlay implements Component {
 		const side = p.fg("border", "│");
 		const row = (text: string) => `${side} ${truncateToWidth(text, inner, "…", true)} ${side}`;
 		const rule = (label: string) => {
-			const text = label ? `─ ${label} ` : "";
+			const text = label ? `─ ${truncateToWidth(label, Math.max(4, width - 6), "…")} ` : "";
 			return (
 				p.fg("border", "├") +
 				p.fg("border", text) +
@@ -162,7 +162,8 @@ export class MonitorsOverlay implements Component {
 			shortcut: "",
 			reducedMotion: this.deps.reducedMotion(),
 		};
-		const maxRows = Math.max(10, this.deps.rows() - 4);
+		// The overlay may use 85% of the terminal height.
+		const maxRows = Math.max(12, Math.floor(this.deps.rows() * 0.85));
 
 		if (this.view === "log") {
 			lines.push(rule(`${displayName(item)} · ${item.logPath || "no log"}`));
@@ -189,16 +190,17 @@ export class MonitorsOverlay implements Component {
 			const starts = jobs.map((j) => j.startedAt).filter((t): t is number => t !== undefined);
 			const from = Math.min(item.progress.startedAt ?? Infinity, ...starts, item.startedAt);
 			const to = item.endedAt ?? now;
-			const gantt = ganttRows(jobs.slice(0, 10), from, to, inner, p);
+			const room = Math.max(3, Math.min(10, maxRows - lines.length - 6));
+			const gantt = ganttRows(jobs.slice(0, room), from, to, inner, p);
 			for (const line of gantt) lines.push(row(line));
-			if (jobs.length > 10) lines.push(row(p.fg("dim", `+${jobs.length - 10} more jobs`)));
+			if (jobs.length > room) lines.push(row(p.fg("dim", `+${jobs.length - room} more jobs`)));
 		} else {
 			lines.push(rule(`${displayName(item)} · activity`));
 			lines.push(row(`${sparkline(item.activity, now, p, Math.min(24, inner - 20))}  ${p.fg("dim", "lines per 10s")}`));
 		}
 
 		lines.push(rule(`log · ${item.logPath || "none"}`));
-		const tail = item.log.tail.slice(-8);
+		const tail = item.log.tail.slice(-Math.max(3, maxRows - lines.length - 1));
 		for (const line of tail) lines.push(row(p.fg("toolOutput", line)));
 		if (tail.length === 0) lines.push(row(p.fg("dim", "(no output yet)")));
 		lines.push(truncateToWidth(bottom, width));
