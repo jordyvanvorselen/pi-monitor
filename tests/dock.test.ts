@@ -102,7 +102,7 @@ describe("dock card", () => {
 		assert.match(lines[0]!, /^╭─ monitors ─+ 2 running · saved ~6\.2k tok ─╮$/);
 		assert.match(lines[1]!, /^│ ⠹ dev server {2}▁▁▁▁▃█▁▅ {2}last: GET \/api\/users 200 in 12ms · 12s ago +10m00s │$/);
 		assert.match(lines[2]!, /^│ ⠹ CI #42 {2}●━━●━━◐┄┄○┄┄○ {2}test ▸ Run unit tests +▰▰▰▱▱ ~1m {2}4m10s │$/);
-		assert.match(lines[3]!, /^╰─+ ctrl\+shift\+m view · \/monitors ─╯$/);
+		assert.match(lines[3]!, /^╰─+ ctrl\+shift\+m details ─╯$/);
 	});
 
 	it("keeps every line exactly as wide as the terminal at several widths", () => {

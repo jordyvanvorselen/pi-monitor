@@ -277,7 +277,7 @@ export function renderDock(all: readonly DockItem[], options: DockOptions, paint
 		["╭", "╮"],
 		paint,
 	);
-	const bottom = border("", paint.fg("dim", `${options.shortcut} view · /monitors`), width, ["╰", "╯"], paint);
+	const bottom = border("", paint.fg("dim", `${options.shortcut} details`), width, ["╰", "╯"], paint);
 	return [top, ...rows, bottom];
 }
 
