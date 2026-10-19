@@ -73,7 +73,7 @@ describe("safety net", () => {
 		assert.equal(record.hidden, false);
 		assert.equal(record.wake, "final");
 		await until(() => sent.length > 0, 5000);
-		assert.match(sent[0]!.content, /SUCCEEDED: exited 0 after 2s\noutput:\n {2}started\n {2}finished/);
+		assert.match(sent[0]!.content, /done: exited 0 after 2s\noutput:\n {2}started\n {2}finished$/);
 	});
 
 	it("honours a bash timeout shorter than the threshold: kills the command and exits 124", async () => {

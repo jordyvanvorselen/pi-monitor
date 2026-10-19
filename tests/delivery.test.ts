@@ -41,9 +41,41 @@ describe("delivery", () => {
 		delivery.final(target, { status: "success", summary: "CI #42 green in 6m02s" });
 		assert.equal(sent.length, 1);
 		assert.deepEqual(sent[0]!.options, { triggerTurn: true });
-		assert.match(sent[0]!.message.content, /^\[monitor m1 "CI"\] SUCCEEDED: CI #42 green in 6m02s/);
+		assert.match(sent[0]!.message.content, /^\[monitor m1 "CI"\] done: CI #42 green in 6m02s$/);
 		assert.equal(sent[0]!.message.customType, "monitor");
 		assert.equal(sent[0]!.message.details.kind, "final");
+	});
+
+	it("keeps a success that fit short: status word, summary and output, no log path", () => {
+		const { sent, delivery, target } = setup();
+		delivery.final(target, {
+			status: "success",
+			summary: "exited 0 after 45s",
+			context: "output:",
+			detail: ["done"],
+		});
+		assert.equal(sent[0]!.message.content, '[monitor m1 "CI"] done: exited 0 after 45s\noutput:\n  done');
+		assert.equal(sent[0]!.message.details.summary, "exited 0 after 45s", "the summary leaves out the status word");
+	});
+
+	it("puts the log path of a failure on its own line after the output", () => {
+		const { sent, delivery, target } = setup();
+		delivery.final(target, {
+			status: "failure",
+			summary: "exited with code 1 after 3s",
+			context: "last output:",
+			detail: ["boom"],
+		});
+		assert.equal(
+			sent[0]!.message.content,
+			'[monitor m1 "CI"] failed: exited with code 1 after 3s\nlast output:\n  boom\nlog: /tmp/m1.log',
+		);
+	});
+
+	it("points to the log when the output was cut, even on success", () => {
+		const { sent, delivery, target } = setup();
+		delivery.final(target, { status: "success", summary: "ok", detail: ["last"], dropped: 12 });
+		assert.match(sent[0]!.message.content, /\n {2}last\nlog \(12 more lines\): \/tmp\/m1\.log$/);
 	});
 
 	it("queues a follow-up when Pi is busy", () => {
@@ -89,14 +121,14 @@ describe("delivery", () => {
 		assert.equal(sent.length, 0);
 		clock.advance(300);
 		assert.equal(sent.length, 1);
-		assert.match(sent[0]!.message.content, /2 new lines\n {2}error: a\n {2}error: b\n {2}log: \/tmp\/m1\.log/);
+		assert.match(sent[0]!.message.content, /2 new lines\n {2}error: a\n {2}error: b$/);
 	});
 
 	it("sends a single batched line as the headline", () => {
 		const { sent, delivery, target, clock } = setup("events");
 		delivery.event(target, { text: "ready on :3000", level: "notable" });
 		clock.advance(500);
-		assert.equal(sent[0]!.message.content, '[monitor m1 "CI"] ready on :3000\n  log: /tmp/m1.log');
+		assert.equal(sent[0]!.message.content, '[monitor m1 "CI"] ready on :3000');
 	});
 
 	it("caps a batch at 20 lines and counts the rest", () => {
@@ -107,7 +139,7 @@ describe("delivery", () => {
 		assert.match(content, /25 new lines/);
 		assert.match(content, /line 19/);
 		assert.doesNotMatch(content, /line 20/);
-		assert.match(content, /… 5 more lines: \/tmp\/m1\.log/);
+		assert.match(content, /\nlog \(5 more lines\): \/tmp\/m1\.log$/);
 	});
 
 	it("collapses repeated lines in a batch", () => {
@@ -124,7 +156,7 @@ describe("delivery", () => {
 		delivery.final(target, { status: "failure", summary: "exited with code 2 after 3s" });
 		assert.equal(sent.length, 2);
 		assert.match(sent[0]!.message.content, /compiling/);
-		assert.match(sent[1]!.message.content, /FAILED: exited with code 2/);
+		assert.match(sent[1]!.message.content, /failed: exited with code 2/);
 	});
 
 	it("pauses a monitor that sends more than 10 wake messages in a minute and says so once", () => {

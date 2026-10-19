@@ -67,7 +67,7 @@ describe("resume", () => {
 		await h.fire("session_start", { reason: "resume" });
 		await until(() => h.sent.length > 0);
 		assert.match(calls[0]!, /^gh run view 1001 --json/);
-		assert.match(h.sent[0]!.message.content, /\[monitor m1 "CI"\] SUCCEEDED: CI #9 green/);
+		assert.match(h.sent[0]!.message.content, /\[monitor m1 "CI"\] done: CI #9 green/);
 		const ends = h.entries.filter((e) => e.data.kind === "end");
 		assert.deepEqual(
 			ends.map((e) => [e.data.id, e.data.status]),

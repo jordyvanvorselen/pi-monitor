@@ -44,7 +44,7 @@ describe("startMonitor", () => {
 			'Started m1 "unit tests" (echo ok). You will be notified when it ends. Continue with other work.',
 		);
 		await until(() => sent.length > 0);
-		assert.match(sent[0]!.content, /SUCCEEDED: exited 0/);
+		assert.match(sent[0]!.content, /done: exited 0/);
 		assert.deepEqual(
 			entries.map((e) => e.kind),
 			["start", "end"],

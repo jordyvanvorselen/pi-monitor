@@ -97,11 +97,14 @@ export interface EventMessage {
 	/** Lines that did not fit. Mentioned together with the log path. */
 	dropped?: number;
 	logPath?: string;
+	/** Point to the log even when nothing was cut, e.g. for failures. */
+	alwaysLog?: boolean;
 }
 
 /**
  * Render an event message for the model and cap it at about `maxTokens`.
- * The header and log pointer always survive; body lines are dropped from the top first.
+ * The log path is added only when lines were cut or `alwaysLog` is set, on its own line after the
+ * body so it does not read like output. Body lines are dropped from the top first.
  */
 export function formatEvent(message: EventMessage, maxTokens = 400): string {
 	const header = `[monitor ${message.id} "${message.description}"] ${message.headline}`;
@@ -110,7 +113,8 @@ export function formatEvent(message: EventMessage, maxTokens = 400): string {
 	let dropped = message.dropped ?? 0;
 	const footer = () => {
 		if (!message.logPath) return [];
-		return dropped > 0 ? [`  … ${dropped} more lines: ${message.logPath}`] : [`  log: ${message.logPath}`];
+		if (dropped > 0) return [`log (${dropped} more lines): ${message.logPath}`];
+		return message.alwaysLog ? [`log: ${message.logPath}`] : [];
 	};
 	const render = () => [...head, ...body, ...footer()].join("\n");
 	let text = render();

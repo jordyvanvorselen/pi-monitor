@@ -59,7 +59,7 @@ describe("format", () => {
 		const text = formatEvent({
 			id: "m3",
 			description: "CI for PR #42",
-			headline: "FAILED after 6m12s",
+			headline: "failed after 6m12s",
 			context: 'job "test" step "Run unit tests" failed:',
 			lines: ["✗ extension.test.ts > loads rules lazily"],
 			dropped: 214,
@@ -68,10 +68,10 @@ describe("format", () => {
 		assert.equal(
 			text,
 			[
-				'[monitor m3 "CI for PR #42"] FAILED after 6m12s',
+				'[monitor m3 "CI for PR #42"] failed after 6m12s',
 				'job "test" step "Run unit tests" failed:',
 				"  ✗ extension.test.ts > loads rules lazily",
-				"  … 214 more lines: /tmp/pi-monitor/m3.log",
+				"log (214 more lines): /tmp/pi-monitor/m3.log",
 			].join("\n"),
 		);
 	});
@@ -81,7 +81,7 @@ describe("format", () => {
 		const text = formatEvent({ id: "m1", description: "x", headline: "FAILED", lines, logPath: "/tmp/m1.log" }, 400);
 		assert.ok(estimateTokens(text) <= 400, `got ${estimateTokens(text)} tokens`);
 		assert.match(text, /line number 199/);
-		assert.match(text, /more lines: \/tmp\/m1\.log$/);
+		assert.match(text, /^log \(\d+ more lines\): \/tmp\/m1\.log$/m);
 		assert.doesNotMatch(text, /line number 0 /);
 	});
 });

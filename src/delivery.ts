@@ -81,10 +81,10 @@ interface Batch {
 }
 
 const STATUS_WORD: Record<OutcomeStatus, string> = {
-	success: "SUCCEEDED",
-	failure: "FAILED",
-	timeout: "TIMED OUT",
-	stopped: "STOPPED",
+	success: "done",
+	failure: "failed",
+	timeout: "timed out",
+	stopped: "stopped",
 };
 
 /** Does an event at this level wake the model under this wake level? Failures always wake, except under `never`. */
@@ -131,6 +131,7 @@ export class Delivery {
 					lines: event.detail ?? [],
 					dropped: event.dropped ?? 0,
 					logPath: target.logPath,
+					alwaysLog: true,
 				},
 				this.limits.maxTokens,
 			);
@@ -187,11 +188,13 @@ export class Delivery {
 				lines: outcome.detail ?? [],
 				dropped: outcome.dropped ?? 0,
 				logPath: target.logPath,
+				alwaysLog: outcome.status !== "success",
 			},
 			this.limits.maxTokens,
 		);
-		const summary = `${STATUS_WORD[outcome.status].toLowerCase()}: ${outcome.summary}`;
-		this.send(target, content, { kind: "final", status: outcome.status, summary }, outcome.status === "failure");
+		// The transcript shows the status as a glyph, so the summary leaves out the status word.
+		const details = { kind: "final" as const, status: outcome.status, summary: outcome.summary };
+		this.send(target, content, details, outcome.status === "failure");
 	}
 
 	/** Drop timers and flood state of a monitor. */

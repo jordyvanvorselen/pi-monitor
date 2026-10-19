@@ -22,7 +22,7 @@ describe("extension wiring", () => {
 		assert.match(result.content[0]!.text, /^Started m1 "echo test" \(echo hello; exit 2\)\. You will be notified/);
 		await until(() => h.sent.some((s) => s.message.details.kind === "final"));
 		const final = h.sent.find((s) => s.message.details.kind === "final")!;
-		assert.match(final.message.content, /^\[monitor m1 "echo test"\] FAILED: exited with code 2/);
+		assert.match(final.message.content, /^\[monitor m1 "echo test"\] failed: exited with code 2/);
 		assert.deepEqual(final.options, { triggerTurn: true });
 		const logPath = String(result.details.logPath);
 		assert.ok(existsSync(logPath));

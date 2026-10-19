@@ -68,21 +68,21 @@ describe("message renderer", () => {
 		description: "CI for PR #42",
 		kind: "final",
 		status: "failure",
-		summary: "failed: CI #42 failure after 6m12s: test",
+		summary: "CI #42 failure after 6m12s: test",
 	};
-	const content = '[monitor m3 "CI for PR #42"] FAILED: CI #42 failure after 6m12s: test\n  log: /tmp/m3.log';
+	const content = '[monitor m3 "CI for PR #42"] failed: CI #42 failure after 6m12s: test\nlog: /tmp/m3.log';
 
 	it("shows one compact line when collapsed", () => {
 		assert.equal(
 			renderMonitorMessage(content, details, false, plainTheme),
-			"✗ monitor m3 CI for PR #42 · failed: CI #42 failure after 6m12s: test",
+			"✗ monitor m3 CI for PR #42 · CI #42 failure after 6m12s: test",
 		);
 	});
 
 	it("shows what the model got when expanded", () => {
 		const text = renderMonitorMessage(content, details, true, tagTheme);
 		assert.match(text, /<error>✗<\/error>/);
-		assert.match(text, /\n<toolOutput> {2}log: \/tmp\/m3\.log<\/toolOutput>$/);
+		assert.match(text, /\n<toolOutput>log: \/tmp\/m3\.log<\/toolOutput>$/);
 	});
 });
 
