@@ -19,6 +19,10 @@ export interface MonitorSpec {
 	cwd: string;
 	/** Command monitors: include the last output in the success message too. */
 	reportOutput: boolean;
+	/** gh_run "latest"/"next": branch to look at instead of the current one. */
+	branch?: string;
+	/** gh_run "latest"/"next": only runs of this workflow. */
+	workflow?: string;
 }
 
 /** `ended` = a command watcher that did not survive a session restart. */
@@ -337,6 +341,7 @@ export class Registry {
 			outcome = await source.start({
 				signal,
 				cwd: spec.cwd || this.deps.cwd(),
+				startedAt: record.startedAt,
 				run: this.deps.run,
 				now: () => this.clock.now(),
 				sleep: (ms) => abortableSleep(ms, signal),
@@ -350,7 +355,7 @@ export class Registry {
 					this.deps.onChange();
 				},
 				update: (progress) => {
-					const latest = spec.kind === "gh_run" && spec.target === "latest";
+					const latest = spec.kind === "gh_run" && (spec.target === "latest" || spec.target === "next");
 					if (
 						latest &&
 						progress.url &&

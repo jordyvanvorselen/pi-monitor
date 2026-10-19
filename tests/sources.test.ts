@@ -18,6 +18,7 @@ function context(fakeTime = false) {
 		signal: controller.signal,
 		cwd: tmpdir(),
 		run: defaultRun,
+		startedAt: 0,
 		now: () => (fakeTime ? time : Date.now()),
 		sleep: fakeTime
 			? async (ms) => {

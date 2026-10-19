@@ -13,6 +13,7 @@ function context(controller = new AbortController()) {
 		signal: controller.signal,
 		cwd: tmpdir(),
 		run: defaultRun,
+		startedAt: Date.now(),
 		now: () => Date.now(),
 		sleep: (ms) => abortableSleep(ms, controller.signal),
 		emit: (event) => events.push(event),

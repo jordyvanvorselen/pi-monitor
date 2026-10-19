@@ -12,7 +12,10 @@ export function buildSource(spec: MonitorSpec): Source {
 		case "command":
 			return commandSource({ kind: "spawn", command: spec.target, reportOutput: spec.reportOutput === true });
 		case "gh_run":
-			return ghRunSource(spec.target);
+			return ghRunSource(spec.target, {
+				...(spec.branch ? { branch: spec.branch } : {}),
+				...(spec.workflow ? { workflow: spec.workflow } : {}),
+			});
 		case "gh_pr":
 			return ghPrSource(spec.target);
 		case "file":

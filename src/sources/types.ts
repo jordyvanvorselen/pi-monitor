@@ -64,6 +64,8 @@ export interface SourceContext {
 	signal: AbortSignal;
 	cwd: string;
 	run: Run;
+	/** When the monitor started (earlier than now after a resume). */
+	startedAt: number;
 	now(): number;
 	/** Resolves after `ms`, or early when the monitor stops. */
 	sleep(ms: number): Promise<void>;

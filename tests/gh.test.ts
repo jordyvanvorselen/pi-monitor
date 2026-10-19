@@ -45,6 +45,7 @@ function context(run: Run) {
 		signal: controller.signal,
 		cwd: "/repo",
 		run,
+		startedAt: time,
 		now: () => time,
 		sleep: async (ms) => {
 			time += ms;
@@ -78,14 +79,15 @@ describe("gh helpers", () => {
 		assert.equal(jobState("completed", "skipped"), "skipped");
 	});
 
-	it("parses run ids, run URLs and latest", () => {
+	it("parses run ids, run URLs, latest and next", () => {
 		assert.deepEqual(parseRunTarget("123"), { id: "123" });
 		assert.deepEqual(parseRunTarget("https://github.com/acme/app/actions/runs/456/job/7"), {
 			id: "456",
 			repo: "acme/app",
 		});
 		assert.deepEqual(parseRunTarget("latest"), { latest: true });
-		assert.throws(() => parseRunTarget("main"), /run id, a run URL or "latest"/);
+		assert.deepEqual(parseRunTarget("next"), { next: true });
+		assert.throws(() => parseRunTarget("main"), /run id, a run URL, "latest" or "next"/);
 	});
 
 	it("parses PR numbers and URLs", () => {
@@ -194,6 +196,77 @@ describe("gh_run source", () => {
 		const outcome = await ghRunSource("latest").start(context(run).ctx);
 		assert.equal(outcome.status, "success");
 		assert.equal(calls.filter((c) => c.includes("--branch feature")).length, 2, "waits for the run to appear");
+	});
+
+	it("returns the result of an already finished latest run at once, without polling", async () => {
+		const completed = load<GhRun[]>("gh-run-green.json")[1]!;
+		const { run, calls } = fakeRun([
+			[/^git branch --show-current/, { stdout: "main\n", stderr: "", code: 0 }],
+			[/^git rev-parse HEAD/, { stdout: "abc\n", stderr: "", code: 0 }],
+			[/gh run list --branch main/, json([{ databaseId: 1001, headSha: "abc", createdAt: "2024-05-01T11:00:00Z" }])],
+			[/gh run view 1001 --json/, json(completed)],
+			[/gh run list --workflow/, json([])],
+		]);
+		const c = context(run);
+		let slept = 0;
+		c.ctx.sleep = async () => {
+			slept++;
+		};
+		const outcome = await ghRunSource("latest").start(c.ctx);
+		assert.deepEqual(outcome, { status: "success", summary: "CI #42 green in 6m02s" });
+		assert.equal(calls.filter((call) => call.startsWith("gh run view")).length, 1);
+		assert.equal(slept, 0);
+	});
+
+	it("next waits for the first run created after the monitor started, then watches it", async () => {
+		const { run, calls } = fakeRun([
+			[/^git branch --show-current/, { stdout: "feature\n", stderr: "", code: 0 }],
+			[
+				/gh run list --branch feature --limit 20/,
+				sequence([
+					[{ databaseId: 900, createdAt: "2024-05-01T11:00:00Z", status: "completed" }],
+					[{ databaseId: 900, createdAt: "2024-05-01T11:00:00Z", status: "completed" }],
+					[
+						{ databaseId: 1002, createdAt: "2024-05-01T12:00:40Z", status: "queued" },
+						{ databaseId: 1001, createdAt: "2024-05-01T12:00:20Z", status: "in_progress" },
+						{ databaseId: 900, createdAt: "2024-05-01T11:00:00Z", status: "completed" },
+					],
+				]),
+			],
+			[/gh run view 1001 --json/, sequence(load("gh-run-green.json"))],
+			[/gh run list --workflow/, json([])],
+		]);
+		const c = context(run);
+		const outcome = await ghRunSource("next").start(c.ctx);
+		assert.equal(outcome.status, "success");
+		assert.equal(calls.filter((call) => call.includes("--branch feature")).length, 3, "polls until a new run shows up");
+		assert.ok(
+			calls.some((call) => call.startsWith("gh run view 1001")),
+			"watches the earliest new run",
+		);
+		assert.equal(c.progress().title, "CI #42");
+	});
+
+	it("next uses the given branch and workflow instead of the current branch", async () => {
+		const { run, calls } = fakeRun([
+			[
+				/gh run list --branch release --workflow ci\.yml --limit 20/,
+				json([{ databaseId: 1001, createdAt: "2024-05-01T12:00:10Z", status: "queued" }]),
+			],
+			[/gh run view 1001 --json/, sequence(load("gh-run-green.json"))],
+			[/gh run list --workflow 77/, json([])],
+		]);
+		const outcome = await ghRunSource("next", { branch: "release", workflow: "ci.yml" }).start(context(run).ctx);
+		assert.equal(outcome.status, "success");
+		assert.ok(!calls.some((call) => call.startsWith("git ")), "no git call with an explicit branch");
+	});
+
+	it("next stops quietly when the monitor stops before a run appears", async () => {
+		const { run } = fakeRun([[/gh run list --branch main/, json([])]]);
+		const c = context(run);
+		c.ctx.sleep = async () => c.controller.abort();
+		const outcome = await ghRunSource("next", { branch: "main" }).start(c.ctx);
+		assert.equal(outcome.status, "stopped");
 	});
 
 	it("gives up at once when gh is not authenticated", async () => {

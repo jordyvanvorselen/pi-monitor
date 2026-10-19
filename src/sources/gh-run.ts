@@ -59,13 +59,14 @@ export const RUN_FIELDS =
 
 const FAILED = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"]);
 
-export function parseRunTarget(target: string): { id?: string; repo?: string; latest?: boolean } {
+export function parseRunTarget(target: string): { id?: string; repo?: string; latest?: boolean; next?: boolean } {
 	const value = target.trim();
 	if (value === "latest") return { latest: true };
+	if (value === "next") return { next: true };
 	if (/^\d+$/.test(value)) return { id: value };
 	const url = RUN_URL.exec(value);
 	if (url) return { id: url[2]!, repo: url[1]! };
-	throw new Error(`gh_run must be a run id, a run URL or "latest". Got "${target}".`);
+	throw new Error(`gh_run must be a run id, a run URL, "latest" or "next". Got "${target}".`);
 }
 
 export function jobState(status: string, conclusion: string | null): JobState {
@@ -108,20 +109,46 @@ function runDuration(run: GhRun, now: number): number {
 	return ended - started;
 }
 
-async function resolveLatest(ctx: SourceContext, repo?: string): Promise<string> {
-	const git = async (args: string[]) =>
-		(await ctx.run("git", args, { signal: ctx.signal, cwd: ctx.cwd })).stdout.trim();
-	const branch = await git(["branch", "--show-current"]);
-	const head = await git(["rev-parse", "HEAD"]);
-	if (!branch) throw new Error('gh_run "latest" needs a checked-out branch.');
+export interface RunFilter {
+	/** Branch to look at. Default: the current branch. */
+	branch?: string;
+	/** Workflow name, file or id, as `gh run list --workflow` takes it. */
+	workflow?: string;
+}
+
+async function git(ctx: SourceContext, args: string[]): Promise<string> {
+	return (await ctx.run("git", args, { signal: ctx.signal, cwd: ctx.cwd })).stdout.trim();
+}
+
+async function branchFor(ctx: SourceContext, filter: RunFilter, target: string): Promise<string> {
+	const branch = filter.branch ?? (await git(ctx, ["branch", "--show-current"]));
+	if (!branch) throw new Error(`gh_run "${target}" needs a checked-out branch or a branch field.`);
+	return branch;
+}
+
+function listArgs(branch: string, filter: RunFilter, repo: string | undefined, limit: number): string[] {
+	const workflow = filter.workflow ? ["--workflow", filter.workflow] : [];
+	return [
+		"run",
+		"list",
+		"--branch",
+		branch,
+		...workflow,
+		"--limit",
+		String(limit),
+		"--json",
+		"databaseId,headSha,createdAt,status",
+		...repoArgs(repo),
+	];
+}
+
+async function resolveLatest(ctx: SourceContext, filter: RunFilter, repo?: string): Promise<string> {
+	const branch = await branchFor(ctx, filter, "latest");
+	const head = await git(ctx, ["rev-parse", "HEAD"]);
 	const deadline = ctx.now() + 60_000;
 	let runs: RunListItem[];
 	for (;;) {
-		runs = await ghJson<RunListItem[]>(
-			ctx.run,
-			["run", "list", "--branch", branch, "--limit", "10", "--json", "databaseId,headSha,createdAt", ...repoArgs(repo)],
-			ctx,
-		);
+		runs = await ghJson<RunListItem[]>(ctx.run, listArgs(branch, filter, repo, 10), ctx);
 		const forHead = runs
 			.filter((r) => r.headSha === head)
 			.sort((a, b) => (parseTime(b.createdAt) ?? 0) - (parseTime(a.createdAt) ?? 0));
@@ -131,6 +158,36 @@ async function resolveLatest(ctx: SourceContext, repo?: string): Promise<string>
 	}
 	if (runs[0]) return String(runs[0].databaseId);
 	throw new Error(`No GitHub Actions run found for branch ${branch} after 60s.`);
+}
+
+/** Runs created this long before the monitor started still count as "next" (clock skew). */
+const NEXT_SKEW_MS = 5_000;
+
+/**
+ * Wait for the first run on the branch that was created after the monitor started.
+ * Polls with the usual backoff until it appears; the monitor timeout ends the wait.
+ */
+async function waitForNext(ctx: SourceContext, filter: RunFilter, repo?: string): Promise<string | undefined> {
+	const branch = await branchFor(ctx, filter, "next");
+	const since = ctx.startedAt - NEXT_SKEW_MS;
+	const budget = new ErrorBudget();
+	ctx.update({ title: `next run on ${branch}` });
+	while (!ctx.signal.aborted) {
+		try {
+			const runs = await ghJson<RunListItem[]>(ctx.run, listArgs(branch, filter, repo, 20), ctx);
+			budget.ok();
+			const next = runs
+				.filter((r) => (parseTime(r.createdAt) ?? 0) >= since)
+				.sort((a, b) => (parseTime(a.createdAt) ?? 0) - (parseTime(b.createdAt) ?? 0))[0];
+			if (next) return String(next.databaseId);
+		} catch (error) {
+			if (ctx.signal.aborted) break;
+			const fatal = budget.fail(error);
+			if (fatal) throw new Error(fatal, { cause: error });
+		}
+		await ctx.sleep(pollDelay(ctx.now() - ctx.startedAt));
+	}
+	return undefined;
 }
 
 /** Median duration of the last successful runs of the same workflow. */
@@ -163,16 +220,20 @@ async function typicalDuration(ctx: SourceContext, workflowId: number, exclude: 
  * Watches one GitHub Actions run with `gh run view`. Emits only changes: job started (progress),
  * job passed (notable), job failed (failure, with the tail of its failed log).
  */
-export function ghRunSource(target: string): Source {
+export function ghRunSource(target: string, filter: RunFilter = {}): Source {
 	const parsed = parseRunTarget(target);
+	const on = filter.branch ? ` on ${filter.branch}` : "";
 	return {
 		kind: "gh_run",
-		label: parsed.latest ? "gh run latest" : `gh run ${parsed.id}`,
+		label: parsed.latest ? `gh run latest${on}` : parsed.next ? `next gh run${on}` : `gh run ${parsed.id}`,
 		async start(ctx) {
 			const repo = parsed.repo;
 			let runId: string;
 			try {
-				runId = parsed.id ?? (await resolveLatest(ctx, repo));
+				const resolved =
+					parsed.id ?? (parsed.next ? await waitForNext(ctx, filter, repo) : await resolveLatest(ctx, filter, repo));
+				if (resolved === undefined) return { status: "stopped", summary: "stopped" };
+				runId = resolved;
 			} catch (error) {
 				if (ctx.signal.aborted) return { status: "stopped", summary: "stopped" };
 				return { status: "failure", summary: (error as Error).message };
