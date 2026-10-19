@@ -48,7 +48,7 @@ When a job fails, the model gets one short message with the tail of the failed l
 job "test" step "Run unit tests" failed:
   ✗ extension.test.ts > loads rules lazily
     Expected 2, received 3 (tests/extension.test.ts:88)
-  log: /tmp/pi-monitor/<session>/m1.log
+log: /tmp/pi-monitor/<session>/m1.log
 ```
 
 GitHub sources need the [GitHub CLI](https://cli.github.com) (`gh`), logged in with `gh auth login`.
@@ -61,24 +61,28 @@ The model gets two tools. Pi adds three short guideline lines to the system prom
 
 Starts a watcher and returns at once. Give exactly one source.
 
-| Parameter         | Meaning                                                                                           |
-| ----------------- | ------------------------------------------------------------------------------------------------- |
-| `description`     | Short label for the UI and the messages, such as `"CI for PR #42"`.                               |
-| `command`         | Shell command. Each stdout line is an event. Filter it yourself, e.g. `grep --line-buffered`.     |
-| `gh_run`          | GitHub Actions run id, run URL, or `"latest"` for the newest run of `HEAD` on the current branch. |
-| `gh_pr`           | Pull request number or URL. Watches all its checks.                                               |
-| `file`            | File to tail. New lines only. Use with `match`.                                                   |
-| `url`             | Wait until the URL answers 2xx.                                                                   |
-| `pid`             | Wait until the process exits.                                                                     |
-| `match`           | Regex. Only matching lines become events. Applies to stdout and stderr.                           |
-| `wake`            | `"final"`, `"events"` or `"never"`. See below.                                                    |
-| `timeout_minutes` | Default 30, at most 240.                                                                          |
+| Parameter         | Meaning                                                                                                                    |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `description`     | Short label for the UI and the messages, such as `"CI for PR #42"`.                                                        |
+| `command`         | Shell command. Each stdout line is an event. Filter it yourself, e.g. `grep --line-buffered`.                              |
+| `gh_run`          | GitHub Actions run id, run URL, `"latest"` for the newest run of `HEAD`, or `"next"` to wait for the next run that starts. |
+| `branch`          | For `gh_run` `"latest"`/`"next"`: the branch to look at. Default: the current branch.                                      |
+| `workflow`        | For `gh_run` `"latest"`/`"next"`: only runs of this workflow.                                                              |
+| `gh_pr`           | Pull request number or URL. Watches all its checks.                                                                        |
+| `file`            | File to tail. New lines only. Use with `match`.                                                                            |
+| `url`             | Wait until the URL answers 2xx.                                                                                            |
+| `pid`             | Wait until the process exits.                                                                                              |
+| `match`           | Regex. Only matching lines become events. Applies to stdout and stderr.                                                    |
+| `wake`            | `"final"`, `"events"` or `"never"`. See below.                                                                             |
+| `timeout_minutes` | Default 30, at most 240.                                                                                                   |
 
 ### `monitor_stop`
 
 Stops a monitor by id, such as `"m3"`, or `"all"`. A stop the model asks for does not wake it.
 
-There is no read tool. Every message contains the log path, and the model reads it with `read`.
+Every stop is recorded with its reason: stopped by the model, stopped by the user, stopped at session shutdown, or timed out. The dock and `/monitors` show it, e.g. `■ dev server stopped by the user after 1m41s`.
+
+There is no read tool. Messages about failures, timeouts and cut output name the log file, and the model reads it with `read`. A success that fits is just the status, a short summary and, for commands that only report at the end, their last output.
 
 ## When the model wakes up
 
@@ -128,7 +132,7 @@ Pi keeps the original tool call, so the transcript and the model's history show 
 Things to know:
 
 - The safety net runs the command in a separate shell, with Pi's `shellPath` and `shellCommandPrefix` settings. Like any bash call in pi, `cd` and `export` do not carry over to the next call.
-- Commands moved to the background end when pi exits. A monitor started this way times out after four hours.
+- Commands moved to the background end when pi exits. A `timeout` on the bash call becomes the monitor's timeout (a `sleep 45 && …` timer always gets at least its sleep plus 15 seconds). Without one, background commands time out after four hours and timers after their sleep plus `defaultTimeoutMinutes`.
 - Only interactive and RPC sessions are intercepted. In print and JSON mode nothing would receive the later message, so bash runs as usual.
 - Set `PI_MONITOR_INTERCEPT=0` to turn the interceptor off. If anything goes wrong inside it, the command runs unchanged and the error goes to `<tmp>/pi-monitor/interceptor.log`.
 
