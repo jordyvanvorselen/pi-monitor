@@ -28,7 +28,25 @@ function backgroundText(id: string, command: string, wake: WakeLevel): string {
 	return `Running in background as ${id} (${shortCommand(command)}). ${then}`;
 }
 
-function specFor(pattern: Pattern, command: string, cwd: string, defaultTimeout: number): MonitorSpec {
+/**
+ * Monitor timeout in minutes. The model's bash `timeout` (seconds) wins when given, but never below
+ * `floorSeconds` (a known sleep plus a margin). Without one, `fallbackMinutes`.
+ */
+export function timeoutMinutes(fallbackMinutes: number, timeoutSeconds?: number, floorSeconds = 0): number {
+	const minutes = timeoutSeconds ? Math.max(timeoutSeconds, floorSeconds) / 60 : fallbackMinutes;
+	return Math.min(MAX_TIMEOUT_MINUTES, minutes);
+}
+
+/** Extra time a timer gets after its sleep for the command that follows. */
+const TIMER_MARGIN_SECONDS = 15;
+
+function specFor(
+	pattern: Pattern,
+	command: string,
+	cwd: string,
+	defaultTimeout: number,
+	timeoutSeconds?: number,
+): MonitorSpec {
 	const description = shortCommand(command);
 	switch (pattern.kind) {
 		case "gh_run":
@@ -38,7 +56,7 @@ function specFor(pattern: Pattern, command: string, cwd: string, defaultTimeout:
 				kind: pattern.kind,
 				target: pattern.target,
 				wake: "final",
-				timeoutMinutes: defaultTimeout,
+				timeoutMinutes: timeoutMinutes(defaultTimeout, timeoutSeconds),
 				cwd,
 			};
 		case "timer":
@@ -47,7 +65,11 @@ function specFor(pattern: Pattern, command: string, cwd: string, defaultTimeout:
 				kind: "command",
 				target: command,
 				wake: "final",
-				timeoutMinutes: Math.min(MAX_TIMEOUT_MINUTES, Math.ceil(pattern.seconds / 60) + defaultTimeout),
+				timeoutMinutes: timeoutMinutes(
+					Math.ceil(pattern.seconds / 60) + defaultTimeout,
+					timeoutSeconds,
+					pattern.seconds + TIMER_MARGIN_SECONDS,
+				),
 				cwd,
 				reportOutput: true,
 			};
@@ -57,7 +79,7 @@ function specFor(pattern: Pattern, command: string, cwd: string, defaultTimeout:
 				kind: "file",
 				target: pattern.path,
 				wake: "events",
-				timeoutMinutes: MAX_TIMEOUT_MINUTES,
+				timeoutMinutes: timeoutMinutes(MAX_TIMEOUT_MINUTES, timeoutSeconds),
 				cwd,
 				...(pattern.match ? { match: pattern.match } : {}),
 			};
@@ -146,9 +168,10 @@ export class Interceptor {
 	): Promise<{ id: string; command: string } | undefined> {
 		const { registry } = this.deps;
 		const settings = this.deps.settings();
+		const seconds = typeof timeout === "number" && timeout > 0 ? timeout : undefined;
 		const pattern = matchPattern(command);
 		if (pattern) {
-			const spec = specFor(pattern, command, ctx.cwd, settings.defaultTimeoutMinutes);
+			const spec = specFor(pattern, command, ctx.cwd, settings.defaultTimeoutMinutes, seconds);
 			const { id } = startMonitor(registry, spec);
 			return { id, command: printfCommand(backgroundText(id, command, spec.wake)) };
 		}
@@ -162,13 +185,12 @@ export class Interceptor {
 				kind: "command",
 				target: command,
 				wake: "final",
-				timeoutMinutes: MAX_TIMEOUT_MINUTES,
+				timeoutMinutes: timeoutMinutes(MAX_TIMEOUT_MINUTES, seconds),
 				cwd: ctx.cwd,
 				reportOutput: true,
 			});
 			return { id, command: printfCommand(backgroundText(id, command, "final")) };
 		}
-		const seconds = typeof timeout === "number" && timeout > 0 ? timeout : undefined;
 		const { id, script } = this.deps.safetyNet.start(toolCallId, command, ctx.cwd, seconds);
 		return { id, command: script };
 	}

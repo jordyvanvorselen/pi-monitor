@@ -65,7 +65,8 @@ export class SafetyNet {
 				kind: "command",
 				target: command,
 				wake: "never",
-				timeoutMinutes: MAX_TIMEOUT_MINUTES,
+				// The model's bash timeout bounds the whole run, also after a move to the background.
+				timeoutMinutes: timeoutSeconds ? Math.min(MAX_TIMEOUT_MINUTES, timeoutSeconds / 60) : MAX_TIMEOUT_MINUTES,
 				cwd,
 				reportOutput: true,
 			},

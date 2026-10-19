@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { Interceptor } from "../src/intercept/index.ts";
-import { lastAssistantText } from "../src/intercept/index.ts";
+import { lastAssistantText, timeoutMinutes } from "../src/intercept/index.ts";
 import type { Registry } from "../src/registry.ts";
 import { harness } from "./harness.ts";
 import { plainTheme, until } from "./helpers.ts";
@@ -75,6 +75,39 @@ describe("bash interceptor", () => {
 			["command", "sleep 21 && echo done", "final", true],
 		);
 		await h.fire("session_shutdown", { reason: "quit" });
+	});
+
+	it("uses the model's bash timeout as the monitor timeout", async () => {
+		const { h, bash, internals } = setup();
+		await h.fire("session_start", { reason: "startup" });
+		await bash("sleep 45 && echo done", 120);
+		assert.equal(internals().registry.get("m1")!.spec.timeoutMinutes, 2);
+		await bash("gh run watch 9", 600);
+		assert.equal(internals().registry.get("m2")!.spec.timeoutMinutes, 10);
+		await h.fire("session_shutdown", { reason: "quit" });
+	});
+
+	it("never lets a bash timeout end a timer before its sleep is over", async () => {
+		const { h, bash, internals } = setup();
+		await h.fire("session_start", { reason: "startup" });
+		await bash("sleep 45 && echo done", 30);
+		assert.equal(internals().registry.get("m1")!.spec.timeoutMinutes, 1);
+		await h.fire("session_shutdown", { reason: "quit" });
+	});
+
+	it("keeps the estimate when the model gives no bash timeout", async () => {
+		const { h, bash, internals } = setup();
+		await h.fire("session_start", { reason: "startup" });
+		await bash("sleep 45 && echo done");
+		assert.equal(internals().registry.get("m1")!.spec.timeoutMinutes, 31);
+		await h.fire("session_shutdown", { reason: "quit" });
+	});
+
+	it("computes monitor timeouts from the bash timeout, a floor and a fallback", () => {
+		assert.equal(timeoutMinutes(31, 120, 60), 2);
+		assert.equal(timeoutMinutes(31, 10, 60), 1);
+		assert.equal(timeoutMinutes(31), 31);
+		assert.equal(timeoutMinutes(31, 999_999), 240);
 	});
 
 	it("turns tail -f | grep into a file monitor with match", async () => {
