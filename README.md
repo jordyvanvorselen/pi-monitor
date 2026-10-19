@@ -38,7 +38,7 @@ A dock appears above the editor:
 │ ✗ e2e on staging exited with code 1 after 8m16s                                              │
 │ ⠹ dev server  ▁▁▂▅▇▅▂▁  last: GET /api/users 200 in 12ms · 12s ago   pi is on it ↳  10m00s │
 │ ⠹ CI #42  ●━━●━━◐┄┄○┄┄○  test ▸ Run unit tests                         ▰▰▰▱▱ ~1m  4m10s │
-╰──────────────────────────────────────────────────────────── ───────── ctrl+shift+m details ─╯
+╰────────────────────────────────────────────────────────────────────── ctrl+shift+m details ─╯
 ```
 
 When a job fails, the model gets one short message with the tail of the failed log:
