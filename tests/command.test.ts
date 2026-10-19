@@ -80,3 +80,21 @@ describe("command source", () => {
 		assert.ok([tmpdir(), expected].includes(lines[0]!.text));
 	});
 });
+
+describe("command source origins", () => {
+	it("adopts a child process that is already running", async () => {
+		const { spawn } = await import("node:child_process");
+		const child = spawn("bash", ["-c", "sleep 0.2; echo adopted; exit 4"], {
+			detached: true,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		const { ctx, lines } = context();
+		const outcome = await commandSource({ kind: "child", child, label: "handed over" }).start(ctx);
+		assert.equal(outcome.status, "failure");
+		assert.deepEqual(lines, [{ text: "adopted", stream: "stdout" }]);
+	});
+
+	it("says clearly that log-file adoption is not built yet", () => {
+		assert.throws(() => commandSource({ kind: "log", path: "/tmp/x.log", label: "x" }), /not supported yet/);
+	});
+});
