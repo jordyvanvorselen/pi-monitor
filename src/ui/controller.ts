@@ -15,6 +15,8 @@ export const SPIN_MS = 120;
 export const CLOCK_MS = 1_000;
 /** Tick while only finished rows are fading out, so the flash ends on time. */
 export const FADE_MS = 250;
+/** Changes closer together than this wait for the next tick. */
+const BURST_MS = 100;
 
 const NEXT_MODE: Record<DockMode, DockMode> = { card: "line", line: "hidden", hidden: "card" };
 
@@ -43,6 +45,7 @@ export class UiController {
 	private widgetShown = false;
 	private status: string | undefined;
 	private title: string | undefined;
+	private lastRefresh = 0;
 	private readonly listeners = new Set<() => void>();
 
 	constructor(deps: ControllerDeps) {
@@ -54,7 +57,7 @@ export class UiController {
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
 		this.ctx = ctx;
 		this.mode = this.deps.settings().dock;
-		this.changed();
+		this.changed(true);
 	}
 
 	/** Remove widget, status and title and stop all timers. Safe to call more than once. */
@@ -94,13 +97,13 @@ export class UiController {
 	setStreaming(streaming: boolean): void {
 		if (this.streaming === streaming) return;
 		this.streaming = streaming;
-		this.changed();
+		this.changed(true);
 	}
 
 	/** card → line → hidden → card. Returns the new mode. */
 	cycleMode(): DockMode {
 		this.mode = NEXT_MODE[this.mode];
-		this.changed();
+		this.changed(true);
 		return this.mode;
 	}
 
@@ -110,15 +113,24 @@ export class UiController {
 		return () => this.listeners.delete(listener);
 	}
 
-	/** Registry changed: redraw and pick the right timer. */
-	changed(): void {
+	/**
+	 * Registry changed: redraw and pick the right timer. While the timer runs, bursts of changes
+	 * (a chatty command) are left to the next tick instead of redrawing on every line.
+	 */
+	changed(force = false): void {
 		if (!this.ctx) return;
+		if (!force && this.timer && this.deps.now() - this.lastRefresh < BURST_MS) {
+			this.schedule();
+			return;
+		}
 		this.refresh();
 		this.schedule();
 	}
 
 	ended(record: MonitorRecord): void {
-		if (!this.ctx || !this.deps.settings().desktopNotifications) return;
+		if (!this.ctx) return;
+		this.changed(true);
+		if (!this.deps.settings().desktopNotifications) return;
 		if (record.status !== "success" && record.status !== "failure" && record.status !== "timeout") return;
 		const glyph = record.status === "success" ? "✓" : record.status === "failure" ? "✗" : "◔";
 		this.deps.notify("pi · monitor", `${glyph} ${record.description}: ${record.summary ?? record.status}`);
@@ -146,6 +158,7 @@ export class UiController {
 		const ctx = this.ctx;
 		if (!ctx) return;
 		const now = this.deps.now();
+		this.lastRefresh = now;
 		const records = this.deps.registry.list();
 		const visible = records.some((r) => isVisible(r, now));
 
