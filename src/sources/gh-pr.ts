@@ -26,7 +26,8 @@ export const CHECK_FIELDS = "name,state,bucket,link,startedAt,completedAt,workfl
 
 export function parsePrTarget(target: string): { pr: string; repo?: string } {
 	const value = target.trim().replace(/^#/, "");
-	if (/^\d+$/.test(value)) return { pr: value };
+	// Empty: the PR of the current branch, like `gh pr checks` without an argument.
+	if (value === "" || /^\d+$/.test(value)) return { pr: value };
 	const url = /github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/.exec(value);
 	if (url) return { pr: url[2]!, repo: url[1]! };
 	// gh also accepts a branch name.
@@ -67,17 +68,18 @@ export function checksToJobs(checks: readonly GhCheck[]): Job[] {
 export function ghPrSource(target: string): Source {
 	const { pr, repo } = parsePrTarget(target);
 	const repoFlag = repo ? ["-R", repo] : [];
+	const prArg = pr ? [pr] : [];
 	return {
 		kind: "gh_pr",
-		label: `PR #${pr}`,
+		label: pr ? `PR #${pr}` : "PR of the current branch",
 		async start(ctx) {
 			const started = ctx.now();
 			const budget = new ErrorBudget();
-			let title = /^\d+$/.test(pr) ? `PR #${pr}` : pr;
+			let title = /^\d+$/.test(pr) ? `PR #${pr}` : pr || "PR";
 			try {
 				const view = await ghJson<{ number?: number; url?: string }>(
 					ctx.run,
-					["pr", "view", pr, "--json", "number,url", ...repoFlag],
+					["pr", "view", ...prArg, "--json", "number,url", ...repoFlag],
 					ctx,
 				);
 				if (view.number) title = `PR #${view.number}`;
@@ -93,7 +95,11 @@ export function ghPrSource(target: string): Source {
 			while (!ctx.signal.aborted) {
 				let checks: GhCheck[];
 				try {
-					checks = await ghJson<GhCheck[]>(ctx.run, ["pr", "checks", pr, "--json", CHECK_FIELDS, ...repoFlag], ctx);
+					checks = await ghJson<GhCheck[]>(
+						ctx.run,
+						["pr", "checks", ...prArg, "--json", CHECK_FIELDS, ...repoFlag],
+						ctx,
+					);
 					budget.ok();
 				} catch (error) {
 					if (ctx.signal.aborted) break;
