@@ -1,21 +1,10 @@
 // Dock v2: the dock drawn cell by cell in 24-bit (or 256) colour, with the animations from the launch video.
-// `renderDock` in dock.ts stays the fallback for light themes and themes without a colour mode.
-import { type Color, colorToRgb } from "@earendil-works/pi-tui";
+// Colours come from the Pi theme (see look.ts). `renderDock` in dock.ts stays the fallback for themes
+// that cannot report concrete colours.
 import { formatDuration, formatShortDuration, formatTokens } from "../format.ts";
 import type { MonitorStatus } from "../registry.ts";
-import {
-	type Cell,
-	type ColorMode,
-	cells,
-	encode,
-	fitCells,
-	flatten,
-	morph,
-	padCells,
-	spaces,
-	truncCells,
-} from "./cells.ts";
-import { clamp, lightness, mix, PALETTE, type Rgb, smooth } from "./color.ts";
+import { type Cell, cells, encode, fitCells, flatten, morph, padCells, spaces, truncCells } from "./cells.ts";
+import { clamp, mix, type Rgb, smooth } from "./color.ts";
 import {
 	borderColor,
 	type Clock,
@@ -48,7 +37,7 @@ import {
 } from "./dock.ts";
 import type { Paint } from "./glyphs.ts";
 
-const { teal, red, gold, white } = PALETTE;
+export { lookFor, type ThemeColors } from "./look.ts";
 
 /** A finished row keeps its last running layout this long, then dissolves into its one-line summary. */
 export const HOLD_MS = 300;
@@ -63,49 +52,6 @@ export const FADE_OUT_MS = 800;
 /** Names are padded to this width so tracks and heartbeats line up. */
 const NAME_COL = 12;
 
-/** The parts of Pi's `Theme` that tell how to draw in colour. */
-export interface ThemeColors {
-	getColorMode?(): ColorMode;
-	readonly appearance?: "dark" | "light";
-	readonly colors?: Readonly<Record<string, Color>>;
-}
-
-function rgbOf(color: Color | undefined): Rgb | undefined {
-	if (!color) return undefined;
-	const { r, g, b } = colorToRgb(color);
-	return [r, g, b];
-}
-
-/**
- * The look for a theme, or undefined when the dock should use the plain theme rendering:
- * no colour mode (not Pi's theme) or a light background, where the palette would be unreadable.
- */
-export function lookFor(theme: ThemeColors, background?: Rgb): Look | undefined {
-	let mode: ColorMode | undefined;
-	let colors: Readonly<Record<string, Color>> | undefined;
-	try {
-		mode = theme.getColorMode?.();
-		colors = theme.colors;
-	} catch {
-		return undefined;
-	}
-	if (mode !== "truecolor" && mode !== "256color") return undefined;
-	if (background ? lightness(background) > 0.5 : theme.appearance === "light") return undefined;
-	const bg = background ?? PALETTE.background;
-	const text = rgbOf(colors?.text) ?? PALETTE.text;
-	return {
-		mode,
-		background: bg,
-		text,
-		muted: rgbOf(colors?.muted) ?? mix(bg, text, 0.56),
-		dim: rgbOf(colors?.dim) ?? mix(bg, text, 0.3),
-		faint: mix(bg, text, 0.16),
-		output: rgbOf(colors?.toolOutput) ?? mix(bg, text, 0.8),
-		warning: rgbOf(colors?.warning) ?? gold,
-		tints: mode === "truecolor",
-	};
-}
-
 interface Ctx {
 	look: Look;
 	clock: Clock;
@@ -115,8 +61,8 @@ interface Ctx {
 type EndStatus = Exclude<MonitorStatus, "running">;
 
 function endStyle(status: EndStatus, look: Look): [string, Rgb] {
-	if (status === "success") return ["✓", teal];
-	if (status === "failure") return ["✗", red];
+	if (status === "success") return ["✓", look.success];
+	if (status === "failure") return ["✗", look.error];
 	if (status === "timeout") return ["◔", look.warning];
 	if (status === "stopped") return ["■", look.dim];
 	return ["◌", look.dim];
@@ -129,9 +75,9 @@ function glyphCells(item: DockItem, ctx: Ctx, end?: EndStatus): Cell[] {
 		const [glyph, color] = endStyle(end, ctx.look);
 		return cells(glyph, color, { bold: true });
 	}
-	if (item.probationUntil !== undefined) return cells("⏳", gold);
+	if (item.probationUntil !== undefined) return cells("⏳", ctx.look.warning);
 	if (item.paused) return cells("‖", ctx.look.warning);
-	return cells(spinnerGlyph(ctx.clock), hasFailure(item) ? red : teal, { bold: true });
+	return cells(spinnerGlyph(ctx.clock), hasFailure(item) ? ctx.look.error : ctx.look.success, { bold: true });
 }
 
 function nameCells(item: DockItem, look: Look): Cell[] {
@@ -166,7 +112,7 @@ function rightCells(item: DockItem, iw: number, ctx: Ctx, at: number, end?: EndS
 	const { look, clock } = ctx;
 	const elapsed = at - (item.progress.startedAt ?? item.startedAt);
 	const parts: Cell[][] = [];
-	if (item.handling) parts.push(handlingCells(clock));
+	if (item.handling) parts.push(handlingCells(look, clock));
 	if (iw >= WIDE && isGh(item) && item.progress.etaMs)
 		parts.push(
 			etaCells(elapsed, item.progress.etaMs, iw >= 104 ? 10 : 6, look, clock, {
@@ -175,7 +121,7 @@ function rightCells(item: DockItem, iw: number, ctx: Ctx, at: number, end?: EndS
 			}),
 		);
 	const left = end ? undefined : countdown(item, at);
-	if (left) parts.push([...cells("background in ", look.dim), ...cells(left.padStart(3), gold)]);
+	if (left) parts.push([...cells("background in ", look.dim), ...cells(left.padStart(3), look.warning)]);
 	else parts.push(cells(formatDuration(elapsed).padStart(6), look.muted));
 	return joinCells(parts, 2, look.text);
 }
@@ -183,7 +129,7 @@ function rightCells(item: DockItem, iw: number, ctx: Ctx, at: number, end?: EndS
 function ghDetailCells(item: DockItem, ctx: Ctx, end?: EndStatus): Cell[] {
 	const { look } = ctx;
 	const jobs = item.progress.jobs ?? [];
-	if (end === "success") return cells(jobs.length ? `all ${jobs.length} jobs passed` : "passed", teal);
+	if (end === "success") return cells(jobs.length ? `all ${jobs.length} jobs passed` : "passed", look.success);
 	if (item.paused) return cells("paused (too noisy)", look.warning);
 	const running = jobs.filter((j) => j.state === "running");
 	const failed = jobs.find((j) => j.state === "failure");
@@ -191,8 +137,8 @@ function ghDetailCells(item: DockItem, ctx: Ctx, end?: EndStatus): Cell[] {
 	if (failed)
 		return [
 			...cells(failed.name, look.text),
-			...cells(" ✗ ", red, { bold: true }),
-			...cells(failed.step ?? "failed", mix(red, look.text, 0.45)),
+			...cells(" ✗ ", look.error, { bold: true }),
+			...cells(failed.step ?? "failed", mix(look.error, look.text, 0.45)),
 			...more(running.length),
 		];
 	const current = running[0];
@@ -232,7 +178,7 @@ function commandRow(item: DockItem, iw: number, ctx: Ctx, at: number, end?: EndS
 	const suffix = [...cells(" · ", look.dim), ...ageCells(ago, look)];
 	const room = iw - prefix.length - suffix.length - right.length - 2;
 	const fresh = clock.motion ? clamp(1 - ago / 800) : 0;
-	const line = cells(item.lastLine.replace(/\s+/g, " ").trim(), mix(look.output, white, fresh * 0.6));
+	const line = cells(item.lastLine.replace(/\s+/g, " ").trim(), mix(look.output, look.highlight, fresh * 0.6));
 	return fitCells([...prefix, ...truncCells(line, Math.max(6, room), look.dim), ...suffix], right, iw, look.text);
 }
 
@@ -243,14 +189,14 @@ function compactRow(item: DockItem, iw: number, ctx: Ctx, at: number, end?: EndS
 	const jobs = item.progress.jobs;
 	if (isGh(item) && jobs?.length) {
 		const { text, failed } = jobCountText(jobs);
-		parts.push(cells(text, failed ? red : look.muted));
+		parts.push(cells(text, failed ? look.error : look.muted));
 	}
 	const left = end ? undefined : countdown(item, at);
 	const elapsed = at - (item.progress.startedAt ?? item.startedAt);
 	parts.push(left ? cells(`bg in ${left}`, look.dim) : cells(formatShortDuration(elapsed), look.muted));
 	if (!isGh(item) && item.lastLineAt !== undefined && at - item.lastLineAt >= STALE_MS)
 		parts.push(ageCells(at - item.lastLineAt, look));
-	if (item.handling) parts.push(cells("↳", teal));
+	if (item.handling) parts.push(cells("↳", look.success));
 	return fitCells(joinCells(parts, 1, look.text), [], iw, look.text);
 }
 
@@ -271,7 +217,7 @@ function doneRow(item: DockItem, iw: number, ctx: Ctx, settle: number): Cell[] {
 		...spaces(1, look.text),
 		...cells(finishedText(item), textColor, { bold: !quiet && settle < 0.5 }),
 	];
-	return fitCells(left, item.handling ? handlingCells(clock) : [], iw, look.text);
+	return fitCells(left, item.handling ? handlingCells(look, clock) : [], iw, look.text);
 }
 
 /** Red breathing: a quick flash when the failure appears, then a slow pulse. */
@@ -281,15 +227,20 @@ function breathing(since: number | undefined, now: number): number {
 	return smooth(t / 120) * (0.72 + 0.28 * Math.cos((t * Math.PI * 2) / 1600) + 0.5 * clamp(1 - t / 700));
 }
 
-/** The glow behind a row right now, if any. */
+/** The glow behind a row right now, if any. Softer on light backgrounds. */
 export function rowGlow(item: DockItem, now: number, look: Look): Glow | undefined {
+	const glow = baseGlow(item, now, look);
+	return glow && { ...glow, amount: glow.amount * look.glow };
+}
+
+function baseGlow(item: DockItem, now: number, look: Look): Glow | undefined {
 	if (item.status === "running")
-		return hasFailure(item) ? { color: red, amount: breathing(item.failingSince, now) } : undefined;
+		return hasFailure(item) ? { color: look.error, amount: breathing(item.failingSince, now) } : undefined;
 	if (item.endedAt === undefined) return undefined;
 	const e = now - item.endedAt;
 	if (item.status === "success")
-		return { color: teal, amount: smooth(e / 120) * Math.exp(-Math.max(0, e - 120) / 750) * 1.1 };
-	if (item.status === "failure") return { color: red, amount: breathing(item.endedAt, now) };
+		return { color: look.success, amount: smooth(e / 120) * Math.exp(-Math.max(0, e - 120) / 750) * 1.1 };
+	if (item.status === "failure") return { color: look.error, amount: breathing(item.endedAt, now) };
 	if (item.status === "timeout") return { color: look.warning, amount: breathing(item.endedAt, now) * 0.7 };
 	return undefined;
 }
@@ -325,7 +276,7 @@ function summaryCells(items: readonly DockItem[], saved: number, look: Look): Ce
 	const failed = items.filter(hasFailure).length;
 	const parts: Cell[][] = [];
 	if (running) parts.push(cells(`${running} running`, look.muted));
-	if (failed) parts.push(cells(`${failed} failed`, red, { bold: true }));
+	if (failed) parts.push(cells(`${failed} failed`, look.error, { bold: true }));
 	if (saved >= 100)
 		parts.push([
 			...cells("saved ~", look.muted),
@@ -350,10 +301,12 @@ function topBorder(items: readonly DockItem[], width: number, saved: number, ctx
 	const { look, clock } = ctx;
 	const running = items.some((i) => i.status === "running");
 	const glow = pulse(items, ctx);
-	const dot = running ? mix(mix(look.background, teal, 0.5), mix(teal, white, 0.4), glow) : look.muted;
+	const dot = running
+		? mix(mix(look.background, look.success, 0.5), mix(look.success, look.highlight, 0.4), glow)
+		: look.muted;
 	const sp = spaces(1, look.text);
 	const left: Cell[] = [{ ch: "╭", fg: look.text }, { ch: "─", fg: look.text }, ...sp];
-	left.push(...cells("◉", dot, { bold: true }), ...sp, ...titleCells(clock), ...sp);
+	left.push(...cells("◉", dot, { bold: true }), ...sp, ...titleCells(look, clock), ...sp);
 	const summary = summaryCells(items, saved, look);
 	let right = summary.length ? [...sp, ...summary, ...sp] : [];
 	if (left.length + right.length + 2 > width) right = [];
@@ -400,7 +353,7 @@ function applyGlow(lines: Cell[][], row: number, glow: Glow, background: Rgb): v
 }
 
 /**
- * Render dock v2. Same rows and rules as `renderDock`, drawn with the dock palette and animated by time:
+ * Render dock v2. Same rows and rules as `renderDock`, drawn in the theme's colours and animated by time:
  * spinner, turning job node, ETA shimmer, heartbeat, border sweep, glows and the finish dissolve.
  */
 export function renderRichDock(all: readonly DockItem[], options: DockOptions, look: Look, paint: Paint): string[] {

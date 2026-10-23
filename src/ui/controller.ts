@@ -1,10 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TerminalColors, TUI } from "@earendil-works/pi-tui";
+import type { RgbColor, TerminalColors, TUI } from "@earendil-works/pi-tui";
 import type { MonitorRecord, Registry } from "../registry.ts";
 import type { Settings } from "../settings.ts";
-import type { Rgb } from "./color.ts";
 import { DockComponent, isVisible, renderDock } from "./dock.ts";
-import { lookFor, renderRichDock, type ThemeColors } from "./dock-rich.ts";
+import { renderRichDock } from "./dock-rich.ts";
+import { lookFor, type TerminalReport, type ThemeColors } from "./look.ts";
 import type { Paint } from "./glyphs.ts";
 import { monitorTitle, piTitle } from "./title.ts";
 
@@ -44,8 +44,8 @@ export class UiController {
 	private widgetShown = false;
 	private title: string | undefined;
 	private lastRefresh = 0;
-	/** The terminal's own background, once it answered. Glows and fades blend into it. */
-	private background: Rgb | undefined;
+	/** The terminal's own background and palette, once it answered. Glows and fades blend into it. */
+	private terminal: TerminalReport = {};
 	private backgroundAsked = false;
 	private readonly listeners = new Set<() => void>();
 
@@ -137,14 +137,14 @@ export class UiController {
 			reducedMotion: settings.reducedMotion,
 		};
 		const records = this.deps.registry.visible();
-		const look = lookFor(theme, this.background);
+		const look = lookFor(theme, this.terminal);
 		return look ? renderRichDock(records, options, look, theme) : renderDock(records, options, theme);
 	}
 
 	/** True when the dock draws in colour with the current theme. */
 	private rich(): boolean {
 		try {
-			return lookFor((this.ctx?.ui.theme ?? {}) as ThemeColors, this.background) !== undefined;
+			return lookFor((this.ctx?.ui.theme ?? {}) as ThemeColors, this.terminal) !== undefined;
 		} catch {
 			return false;
 		}
@@ -155,9 +155,12 @@ export class UiController {
 		if (this.backgroundAsked || typeof tui.queryTerminalColors !== "function" || !lookFor(theme)) return;
 		this.backgroundAsked = true;
 		const apply = (colors: TerminalColors) => {
-			const bg = colors.background;
-			if (!bg) return;
-			this.background = [bg.r, bg.g, bg.b];
+			const rgb = (c: RgbColor | undefined) => (c ? ([c.r, c.g, c.b] as const) : undefined);
+			if (!colors.background && !colors.palette?.some(Boolean)) return;
+			this.terminal = {
+				background: rgb(colors.background) ?? this.terminal.background,
+				palette: colors.palette?.some(Boolean) ? colors.palette.map(rgb) : this.terminal.palette,
+			};
 			this.dock?.invalidate();
 			this.tui?.requestRender();
 		};

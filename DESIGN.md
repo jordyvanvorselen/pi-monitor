@@ -211,11 +211,24 @@ A rounded card, shown only while there is something to show:
 
 ### Colour (dock v2)
 
-With Pi's theme on a dark background the dock is drawn cell by cell (`src/ui/dock-rich.ts`, `cells.ts`, `effects.ts`) in the launch video palette: teal `#3CF2C8`, indigo `#7C8CFF`, red `#FF5F6D`, gold `#FFD66B`. Text tones come from the theme. Rounded border in a teal → indigo gradient with a light sweep every 6 s, pulsing header dot and shimmering `monitors` title, gradient job track with a turning gold running node and a glint, eighth-block ETA bar gold → teal with a shimmer, `pi is on it ↳` shimmer.
+With Pi's theme the dock is drawn cell by cell (`src/ui/dock-rich.ts`, `cells.ts`, `effects.ts`, `look.ts`). Rounded border in a gradient with a light sweep every 6 s, pulsing header dot and shimmering `monitors` title, gradient job track with a turning running node and a glint, eighth-block ETA bar with a shimmer, `pi is on it ↳` shimmer.
 
+Colour roles come from the theme (`look.ts`, `ROLE_TOKENS`). The launch video palette (teal `#3CF2C8`, indigo `#7C8CFF`, red `#FF5F6D`, gold `#FFD66B`) maps to tokens:
+
+| Role             | Theme token                          | Used for                                                     |
+| ---------------- | ------------------------------------ | ------------------------------------------------------------ |
+| `success` (teal) | `success`                            | spinner, done jobs, ✓, green flash, gradient start           |
+| `link` (indigo)  | `mdLink`, else `border`/`accent`     | gradient end of title, track, heartbeat tail, shimmer        |
+| `border`         | `border`, else `mdLink`/`accent`     | gradient end of the card border                              |
+| `error` (red)    | `error`                              | failed jobs, ✗, failing spinner, red glow                    |
+| `warning` (gold) | `warning`                            | running job node, ETA start, overtime, countdown, `quiet 5m` |
+| text tones       | `text`, `muted`, `dim`, `toolOutput` | names, labels, ages, last line                               |
+
+- Theme colours given as ANSI indexes 0-15 resolve through the palette the terminal reports. A role without a token uses the video palette (dark) or a deeper version of it (light). Accents are pushed toward black or white until they reach a 3:1 contrast with the background.
+- Gradients, glows and fades blend into the terminal's real background (asked once with `tui.queryTerminalColors`; until it answers, the theme's appearance decides between a dark and a white guess). The "highlight" for hot tips, glints, the shimmer and the border sweep is white on dark backgrounds and a near-black text colour on light ones, so nothing turns white on white. Light backgrounds get 60% glow strength, a stronger border and a stronger heartbeat tail.
 - Everything is a pure function of the clock, so frames are testable. The controller ticks every 66 ms (about 15 fps) while something is visible and not `reducedMotion`, and stops when nothing is.
-- Glows are background tints around a row, two lines up and down, faded into the terminal's own background (asked once with `tui.queryTerminalColors`). Failing runs breathe red. A green run flashes teal.
-- 256-colour terminals get the nearest colours (Pi's `foregroundAnsi`) and no background tints. Light themes or light terminals, and themes without `getColorMode`, use the plain renderer in `dock.ts`.
+- Failing runs breathe red. A green run flashes.
+- 256-colour terminals get the nearest colours (Pi's `foregroundAnsi`) and no background tints. Only themes without `getColorMode` (not Pi's theme) use the plain renderer in `dock.ts`.
 - `reducedMotion`: same colours, no spinner, shimmer, sweep, glow, flash or dissolve. Clocks and the heartbeat move once a second.
 
 ### Moments
@@ -341,7 +354,8 @@ src/
     dock-rich.ts    dock v2: colour rows, card, glows, dissolve
     effects.ts      heartbeat, gradient track, ETA bar, border sweep
     cells.ts        cell lines, truncation, dissolve, ANSI encoding
-    color.ts        colour math and palette
+    color.ts        colour math, contrast and palette
+    look.ts         theme tokens → colour roles, terminal background
     title.ts        terminal title
     controller.ts   widget, status, title, notifications, timer
     overlay.ts      /monitors

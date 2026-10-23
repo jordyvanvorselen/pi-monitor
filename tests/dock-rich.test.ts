@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import { Theme } from "@earendil-works/pi-coding-agent";
 import { rgbColor, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import type { Job } from "../src/sources/types.ts";
 import { type Cell, cells, cellText, encode, fitCells, flatten, morph, truncCells } from "../src/ui/cells.ts";
-import { clamp, hex, mix, pack, PALETTE, smooth } from "../src/ui/color.ts";
+import { clamp, contrast, hex, luminance, mix, pack, PALETTE, readable, type Rgb, smooth } from "../src/ui/color.ts";
 import type { DockItem, DockOptions } from "../src/ui/dock.ts";
 import {
 	FADE_IN_MS,
@@ -17,6 +20,7 @@ import {
 	type ThemeColors,
 } from "../src/ui/dock-rich.ts";
 import { ECG_DOT_MS, ecgCells, ecgText, etaCells, trackCells } from "../src/ui/effects.ts";
+import { MIN_CONTRAST, ROLE_TOKENS } from "../src/ui/look.ts";
 import { plainTheme } from "./helpers.ts";
 
 const NOW = 1_700_000_400_000;
@@ -28,6 +32,25 @@ function richTheme(mode: "truecolor" | "256color" = "truecolor", appearance: "da
 		appearance,
 		colors: { text: rgbColor(230, 232, 235), muted: rgbColor(140, 144, 150), dim: rgbColor(90, 94, 100) },
 	};
+}
+
+/** One of Pi's built-in themes, built from its JSON the way Pi does. */
+function piTheme(name: "dark" | "light", mode: "truecolor" | "256color" = "truecolor"): Theme {
+	const dir = fileURLToPath(
+		new URL("modes/interactive/theme/", import.meta.resolve("@earendil-works/pi-coding-agent")),
+	);
+	const json = JSON.parse(readFileSync(`${dir}${name}.json`, "utf8")) as {
+		vars?: Record<string, string>;
+		colors: Record<string, string | number>;
+	};
+	const resolve = (v: string | number) => (typeof v === "string" && json.vars?.[v]) || v;
+	const colors = Object.fromEntries(Object.entries(json.colors).map(([k, v]) => [k, resolve(v)]));
+	return new Theme(colors as never, colors as never, mode, { name, appearance: name });
+}
+
+function tokenRgb(theme: Theme, token: string): Rgb {
+	const c = (theme.colors as Record<string, ReturnType<typeof rgbColor>>)[token]!;
+	return [c.r, c.g, c.b];
 }
 
 const look = lookFor(richTheme())!;
@@ -254,10 +277,10 @@ describe("ETA bar", () => {
 		assert.equal(cellText(etaCells(360_000, 360_000, 5, look, still, { done: true })), "█████ done");
 	});
 
-	it("runs from gold to teal over a recessed track", () => {
+	it("runs from the warning to the success colour over a recessed track", () => {
 		const bar = etaCells(360_000, 360_000, 5, look, still);
-		assert.deepEqual(bar[0]!.fg, PALETTE.gold);
-		assert.deepEqual(bar[4]!.fg, PALETTE.teal);
+		assert.deepEqual(bar[0]!.fg, look.warning);
+		assert.deepEqual(bar[4]!.fg, look.success);
 		assert.ok(bar.slice(0, 5).every((c) => c.bg));
 	});
 
@@ -300,14 +323,14 @@ describe("choosing the look", () => {
 		assert.equal(lookFor(plainTheme as ThemeColors), undefined);
 	});
 
-	it("falls back to the plain dock on light themes and light terminals, where the palette is unreadable", () => {
-		assert.equal(lookFor(richTheme("truecolor", "light")), undefined);
-		assert.equal(lookFor(richTheme(), [250, 250, 250]), undefined);
-		assert.notEqual(lookFor(richTheme("truecolor", "light"), [20, 20, 30]), undefined);
+	it("treats the background as light when the terminal reports a light one, whatever the theme says", () => {
+		assert.equal(lookFor(richTheme(), { background: [250, 250, 250] })?.light, true);
+		assert.equal(lookFor(richTheme("truecolor", "light"), { background: [20, 20, 30] })?.light, false);
+		assert.equal(lookFor(richTheme("truecolor", "light"))?.light, true);
 	});
 
 	it("takes text tones from the theme and blends into the reported terminal background", () => {
-		const own = lookFor(richTheme(), [30, 30, 46])!;
+		const own = lookFor(richTheme(), { background: [30, 30, 46] })!;
 		assert.deepEqual(own.text, [230, 232, 235]);
 		assert.deepEqual(own.background, [30, 30, 46]);
 	});
@@ -343,6 +366,8 @@ describe("colour dock", () => {
 		for (const [name, l] of [
 			["truecolor", look],
 			["256", look256],
+			["light truecolor", lookFor(piTheme("light"))!],
+			["light 256", lookFor(piTheme("light", "256color"))!],
 		] as const)
 			for (const reducedMotion of [false, true])
 				for (const items of sets)
@@ -413,7 +438,7 @@ describe("colour dock moments", () => {
 	it("shows the summary bold in the result colour, then settles to muted", () => {
 		const summaryCell = (ago: number) => richRow(green(ago), 126, look, NOW).cells[2]!;
 		const flash = summaryCell(HOLD_MS + MORPH_MS + 10);
-		assert.deepEqual(flash.fg, PALETTE.teal);
+		assert.deepEqual(flash.fg, look.success);
 		assert.equal(flash.bold, true);
 		const settled = summaryCell(SETTLE_AT_MS + SETTLE_MS + 10);
 		assert.deepEqual(settled.fg, look.muted);
@@ -426,10 +451,10 @@ describe("colour dock moments", () => {
 		assert.ok(richRow(green(9_900), 126, look, NOW).alpha < 0.2);
 	});
 
-	it("counts down the probation row in gold", () => {
+	it("counts down the probation row in the warning colour", () => {
 		const row = richRow(probation, 126, look, NOW).cells;
 		assert.match(text(row), /background in {2}9s$/);
-		assert.deepEqual(row.at(-1)!.fg, PALETTE.gold);
+		assert.deepEqual(row.at(-1)!.fg, look.warning);
 	});
 
 	it("brightens the last line for a moment when it arrives", () => {
@@ -477,5 +502,90 @@ describe("colour dock without truecolor", () => {
 		assert.match(visible(out), /ESC\[38;5;\d+m/);
 		assert.doesNotMatch(out, /;2;\d+;\d+;\d+m/);
 		assert.ok(!out.includes("\x1b[48;"));
+	});
+});
+
+describe("colour dock on light themes", () => {
+	const light = piTheme("light");
+	const lightLook = lookFor(light)!;
+	const hotNow = 1_600 * 1_100_000_000;
+	const hotBeats = [5, 4, 3, 2, 1, 0].map((i) => ({ at: hotNow - 100 - i * 900, amp: 1 }));
+
+	it("draws the colour dock on Pi's light theme in truecolor and 256 colours", () => {
+		assert.equal(lightLook.light, true);
+		assert.equal(lookFor(piTheme("light", "256color"))?.mode, "256color");
+	});
+
+	for (const name of ["light", "dark"] as const)
+		it(`takes every colour role from Pi's ${name} theme tokens`, () => {
+			const theme = piTheme(name);
+			const own = lookFor(theme)!;
+			for (const role of ["success", "link", "error", "warning", "border", "text", "muted", "dim", "output"] as const)
+				assert.deepEqual(own[role], tokenRgb(theme, ROLE_TOKENS[role][0]), role);
+		});
+
+	it("falls back to deep built-in colours for roles a light theme does not have", () => {
+		const bare = lookFor({ getColorMode: () => "truecolor", appearance: "light", colors: {} })!;
+		for (const role of ["success", "link", "error", "warning"] as const)
+			assert.ok(contrast(bare[role], bare.background) >= MIN_CONTRAST, role);
+	});
+
+	it("darkens theme accents that would be too pale to read on the background", () => {
+		const pale = lookFor({
+			getColorMode: () => "truecolor",
+			appearance: "light",
+			colors: { success: rgbColor(190, 255, 225) },
+		})!;
+		assert.ok(contrast(pale.success, pale.background) >= MIN_CONTRAST);
+		assert.ok(luminance(pale.success) < luminance([190, 255, 225]));
+		assert.deepEqual(readable([0, 0, 0], [255, 255, 255], [0, 0, 0]), [0, 0, 0]);
+	});
+
+	it("uses palette colours the terminal reported for theme colours given as ANSI indexes", () => {
+		const ansi = lookFor(
+			{ getColorMode: () => "truecolor", appearance: "light", colors: { error: { kind: "indexed", index: 1 } } },
+			{ palette: [undefined, [170, 20, 30]] },
+		)!;
+		assert.deepEqual(ansi.error, [170, 20, 30]);
+	});
+
+	it("darkens the hot head, tips and glints instead of turning them white", () => {
+		const head = ecgCells(hotBeats, hotNow, 18, lightLook, { now: hotNow, motion: true }).at(-1)!;
+		assert.ok(luminance(head.fg) < 0.2, "heartbeat head");
+		assert.ok(contrast(lightLook.highlight, lightLook.background) >= 7, "highlight");
+		const node = trackCells(jobs, 30, lightLook, { now: hotNow, motion: true })[6]!;
+		assert.ok(contrast(node.fg, lightLook.background) >= MIN_CONTRAST, "running node");
+		const fresh = richRow({ ...devServer, lastLineAt: hotNow - 50 }, 126, lightLook, hotNow).cells.find(
+			(c) => c.ch === "G",
+		)!;
+		assert.ok(
+			contrast(fresh.fg, lightLook.background) >= contrast(lightLook.output, lightLook.background),
+			"fresh line",
+		);
+	});
+
+	it("keeps text readable on the strongest glow", () => {
+		const peak = { ...failing, failingSince: hotNow - 1_600 * 3 };
+		const lines = renderRichDock([peak], options({ width: 80, now: hotNow }), lightLook, plainTheme);
+		const tints = lines.flatMap((l) =>
+			[...l.matchAll(/48;2;(\d+);(\d+);(\d+)m/g)].map((m) => [+m[1]!, +m[2]!, +m[3]!] as Rgb),
+		);
+		assert.ok(tints.length > 0);
+		for (const bg of tints) {
+			assert.ok(contrast(lightLook.text, bg) >= 4.5, `text on ${bg}`);
+			assert.ok(contrast(lightLook.error, bg) >= MIN_CONTRAST, `error on ${bg}`);
+		}
+	});
+
+	it("glows softer on light backgrounds than on dark ones", () => {
+		const dark = lookFor(piTheme("dark"))!;
+		const at = (l: typeof dark) => richRow(failing, 76, l, NOW).glow!.amount;
+		assert.ok(at(lightLook) < at(dark));
+	});
+
+	it("keeps the border visible against a light background", () => {
+		const lines = renderRichDock([ci], options({ reducedMotion: true }), lightLook, plainTheme);
+		const corner = /38;2;(\d+);(\d+);(\d+)m╭/.exec(lines[0]!)!;
+		assert.ok(contrast([+corner[1]!, +corner[2]!, +corner[3]!], lightLook.background) >= 1.8);
 	});
 });

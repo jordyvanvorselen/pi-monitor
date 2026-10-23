@@ -2,26 +2,12 @@
 import { formatShortDuration } from "../format.ts";
 import { BEAT_MERGE_MS, type Beat } from "../registry.ts";
 import type { Job } from "../sources/types.ts";
-import { type Cell, cells, type ColorMode, gradient, spaces } from "./cells.ts";
-import { clamp, mix, PALETTE, type Rgb } from "./color.ts";
+import { type Cell, cells, gradient, spaces } from "./cells.ts";
+import { clamp, mix, type Rgb } from "./color.ts";
 import { SPINNER } from "./glyphs.ts";
+import { type Look, VIDEO_LOOK } from "./look.ts";
 
-const { teal, indigo, red, gold, white } = PALETTE;
-
-/** Colours the dock draws with. Text tones come from the Pi theme, accents from the dock palette. */
-export interface Look {
-	mode: ColorMode;
-	/** Terminal background, used to fade things out and to tint around a row. */
-	background: Rgb;
-	text: Rgb;
-	muted: Rgb;
-	dim: Rgb;
-	faint: Rgb;
-	output: Rgb;
-	warning: Rgb;
-	/** Background tints (glow, ETA track) look right. Off for 256-colour terminals. */
-	tints: boolean;
-}
+export type { Look } from "./look.ts";
 
 /** Time drives every animation. `motion: false` freezes all of them (reducedMotion). */
 export interface Clock {
@@ -110,22 +96,10 @@ export function ecgColumns(
 
 /** Braille characters of the trace, without colour. Blank where the monitor had not started yet. */
 export function ecgText(beats: readonly Beat[], now: number, width: number, start?: number): string {
-	return ecgCells(beats, now, width, PLAIN_LOOK, { now, motion: false }, start)
+	return ecgCells(beats, now, width, VIDEO_LOOK, { now, motion: false }, start)
 		.map((c) => c.ch)
 		.join("");
 }
-
-const PLAIN_LOOK: Look = {
-	mode: "truecolor",
-	background: PALETTE.background,
-	text: PALETTE.text,
-	muted: PALETTE.text,
-	dim: PALETTE.text,
-	faint: PALETTE.text,
-	output: PALETTE.text,
-	warning: gold,
-	tints: false,
-};
 
 /**
  * Heartbeat strip: flat baseline, a QRS blip per arriving line, newest on the right. The head is
@@ -142,7 +116,8 @@ export function ecgCells(
 	const columns = ecgColumns(beats, now, width * 2, start);
 	const recent = lastBeat(beats, now);
 	const hot = clock.motion && recent ? clamp(1 - (now - recent.at) / 450) : 0;
-	const ghost = 0.14;
+	// Pale on white reads weaker than dim on black, so the tail stays a little stronger on light backgrounds.
+	const ghost = look.light ? 0.3 : 0.14;
 	const out: Cell[] = [];
 	for (let c = 0; c < width; c++) {
 		let bits = 0;
@@ -161,12 +136,12 @@ export function ecgCells(
 		}
 		const k = (c + 1) / width; // 0 = tail, 1 = head
 		const intensity = ghost + (1 - ghost) * k ** 1.7;
-		let hue = mix(indigo, teal, k ** 0.6);
-		hue = mix(hue, white, Math.min(0.4, peak * 0.28) * k);
+		let hue = mix(look.link, look.success, k ** 0.6);
+		hue = mix(hue, look.highlight, Math.min(0.4, peak * 0.28) * k);
 		let fg = mix(look.background, hue, intensity);
 		const isHead = c === width - 1;
-		if (isHead) fg = mix(fg, white, 0.35 + hot * 0.4);
-		const bg = isHead && hot > 0 && look.tints ? mix(look.background, teal, 0.28 * hot) : undefined;
+		if (isHead) fg = mix(fg, look.highlight, 0.35 + hot * 0.4);
+		const bg = isHead && hot > 0 && look.tints ? mix(look.background, look.success, 0.28 * hot) : undefined;
 		out.push({ ch: String.fromCharCode(0x2800 + bits), fg, bold: isHead, ...(bg ? { bg } : {}) });
 	}
 	return out;
@@ -187,16 +162,16 @@ export function jobCountText(jobs: readonly Job[]): { text: string; failed: bool
 export function trackCells(jobs: readonly Job[], maxWidth: number, look: Look, clock: Clock): Cell[] {
 	if (jobs.length === 0) return [];
 	const T = phase(clock);
-	const ok = (i: number) => mix(teal, indigo, (i / Math.max(1, jobs.length - 1)) * 0.6);
+	const ok = (i: number) => mix(look.success, look.link, (i / Math.max(1, jobs.length - 1)) * 0.6);
 	for (const linkWidth of [2, 1]) {
 		if (jobs.length + (jobs.length - 1) * linkWidth > maxWidth) continue;
 		const out: Cell[] = [];
 		jobs.forEach((job, i) => {
 			if (job.state === "success") out.push(...cells("●", ok(i)));
-			else if (job.state === "failure") out.push(...cells("✗", red, { bold: true }));
+			else if (job.state === "failure") out.push(...cells("✗", look.error, { bold: true }));
 			else if (job.state === "running") {
 				const glyph = clock.motion ? "◐◓◑◒"[Math.floor(T * 6) % 4]! : "◐";
-				out.push(...cells(glyph, mix(gold, white, 0.15 + 0.15 * Math.sin(T * 6)), { bold: true }));
+				out.push(...cells(glyph, mix(look.warning, look.highlight, 0.15 + 0.15 * Math.sin(T * 6)), { bold: true }));
 			} else if (job.state === "skipped") out.push(...cells("◌", look.dim));
 			else out.push(...cells("○", look.dim));
 			if (i === jobs.length - 1) return;
@@ -206,15 +181,17 @@ export function trackCells(jobs: readonly Job[], maxWidth: number, look: Look, c
 				else if (job.state === "skipped") out.push(...cells("━", look.faint));
 				else if (job.state === "running") {
 					const glint = clock.motion && Math.floor(T * 5) % 4 === k;
-					out.push(...cells("┄", glint ? mix(gold, white, 0.2) : mix(look.background, gold, 0.35)));
-				} else if (job.state === "failure") out.push(...cells("┄", mix(look.background, red, 0.45)));
+					out.push(
+						...cells("┄", glint ? mix(look.warning, look.highlight, 0.2) : mix(look.background, look.warning, 0.35)),
+					);
+				} else if (job.state === "failure") out.push(...cells("┄", mix(look.background, look.error, 0.45)));
 				else out.push(...cells("┄", look.faint));
 			}
 		});
 		return out;
 	}
 	const { text, failed } = jobCountText(jobs);
-	return cells(text, failed ? red : look.muted);
+	return cells(text, failed ? look.error : look.muted);
 }
 
 /* ───────────── ETA bar ───────────── */
@@ -239,33 +216,35 @@ export function etaCells(
 	const sweep = clock.motion ? (((clock.now / 1000) % 3.2) / 3.2) * (width + 8) - 4 : -100;
 	const out: Cell[] = [];
 	for (let i = 0; i < width; i++) {
-		let c = mix(gold, teal, i / Math.max(1, width - 1));
-		if (state.failing) c = mix(c, red, 0.65);
-		c = mix(c, white, Math.exp(-(((i - sweep) / 1.6) ** 2)) * 0.35);
+		let c = mix(look.warning, look.success, i / Math.max(1, width - 1));
+		if (state.failing) c = mix(c, look.error, 0.65);
+		c = mix(c, look.highlight, Math.exp(-(((i - sweep) / 1.6) ** 2)) * 0.35);
 		const bg = track ? { bg: track } : {};
 		if (i < full) out.push({ ch: "█", fg: c, ...bg });
 		else if (i === full && fill - full > 0.06)
 			out.push({ ch: EIGHTHS[Math.max(1, Math.floor((fill - full) * 8))]!, fg: c, ...bg });
 		else out.push(track ? { ch: " ", fg: c, bg: track } : { ch: "·", fg: look.faint });
 	}
-	if (state.done) return [...out, ...spaces(1, look.text), ...cells("done", teal)];
+	if (state.done) return [...out, ...spaces(1, look.text), ...cells("done", look.success)];
 	const left = etaMs - elapsedMs;
 	const label = left >= 0 ? `~${formatShortDuration(left)}` : `+${formatShortDuration(-left)}`;
-	return [...out, ...spaces(1, look.text), ...cells(label, left >= 0 ? look.muted : gold)];
+	return [...out, ...spaces(1, look.text), ...cells(label, left >= 0 ? look.muted : look.warning)];
 }
 
 /* ───────────── small pieces ───────────── */
 
 /** `pi is on it ↳` with a gentle teal ↔ indigo shimmer. */
-export function handlingCells(clock: Clock, text = "pi is on it ↳"): Cell[] {
+export function handlingCells(look: Look, clock: Clock, text = "pi is on it ↳"): Cell[] {
 	const T = phase(clock);
-	return gradient(text, (i) => mix(teal, indigo, 0.5 + 0.5 * Math.sin(T * 3 - i * 0.45)));
+	return gradient(text, (i) => mix(look.success, look.link, 0.5 + 0.5 * Math.sin(T * 3 - i * 0.45)));
 }
 
 /** `monitors` in a shimmering teal → indigo gradient. */
-export function titleCells(clock: Clock): Cell[] {
+export function titleCells(look: Look, clock: Clock): Cell[] {
 	const T = phase(clock);
-	return gradient("monitors", (i) => mix(teal, indigo, 0.5 + 0.5 * Math.sin(T * 1.3 - i * 0.42)), { bold: true });
+	return gradient("monitors", (i) => mix(look.success, look.link, 0.5 + 0.5 * Math.sin(T * 1.3 - i * 0.42)), {
+		bold: true,
+	});
 }
 
 /** A glow behind a row: a colour and how strong it is right now. */
@@ -275,11 +254,11 @@ export interface Glow {
 }
 
 /**
- * Border colour at column `i` of `width`: teal → indigo, faded into the background. A soft light sweeps
+ * Border colour at column `i` of `width`: success → border colour (teal → indigo), faded into the background. A soft light sweeps
  * along the top border (`row` 1) and back along the bottom (`row` -1) every 6 seconds. A glow tints it.
  */
 export function borderColor(i: number, width: number, row: -1 | 0 | 1, look: Look, clock: Clock, tint?: Glow): Rgb {
-	let c = mix(teal, indigo, i / Math.max(1, width - 1));
+	let c = mix(look.success, look.border, i / Math.max(1, width - 1));
 	let sheen = 0;
 	if (row !== 0 && clock.motion) {
 		const p = ((clock.now / 1000) % 6) / 1.8;
@@ -288,7 +267,8 @@ export function borderColor(i: number, width: number, row: -1 | 0 | 1, look: Loo
 			sheen = Math.exp(-(((i - x) / 6) ** 2)) * (row > 0 ? 0.6 : 0.35);
 		}
 	}
-	c = mix(c, white, sheen * 0.45);
+	c = mix(c, look.highlight, sheen * 0.45);
 	if (tint) c = mix(c, tint.color, clamp(tint.amount * 0.6));
-	return mix(look.background, c, 0.36 + sheen * 0.5 + (tint ? clamp(tint.amount) * 0.22 : 0));
+	// Light backgrounds need a stronger line to show the same border.
+	return mix(look.background, c, (look.light ? 0.6 : 0.36) + sheen * 0.5 + (tint ? clamp(tint.amount) * 0.22 : 0));
 }
