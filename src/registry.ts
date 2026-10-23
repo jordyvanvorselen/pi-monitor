@@ -35,6 +35,19 @@ export interface ActivityBucket {
 
 export const ACTIVITY_BUCKET_MS = 10_000;
 const ACTIVITY_KEEP = 24;
+
+/** One arriving line, for the dock heartbeat. `amp` below 0.7 is a small blip (a line in a burst). */
+export interface Beat {
+	at: number;
+	amp: number;
+}
+
+/** Enough beats to fill the widest heartbeat strip. */
+const BEATS_KEEP = 48;
+/** Lines closer together than this share one beat. */
+export const BEAT_MERGE_MS = 125;
+/** A line this soon after the previous beat is part of a burst and draws a small blip. */
+const BEAT_BURST_MS = 400;
 const KEEP_FINISHED = 20;
 
 export interface MonitorRecord extends Target {
@@ -50,6 +63,10 @@ export interface MonitorRecord extends Target {
 	lastLine?: string;
 	lastLineAt?: number;
 	activity: ActivityBucket[];
+	/** Recent line arrivals, oldest first. */
+	beats: Beat[];
+	/** When a running GitHub run first showed a failed job. Cleared when no job has failed. */
+	failingSince?: number;
 	/** The model is handling an event from this monitor. */
 	handling: boolean;
 	/**
@@ -179,6 +196,7 @@ export class Registry {
 			startedAt: restore?.startedAt ?? now,
 			progress: {},
 			activity: [],
+			beats: [],
 			handling: false,
 			...(options.probationUntil !== undefined ? { probationUntil: options.probationUntil } : {}),
 			deliveredTokens: 0,
@@ -249,6 +267,7 @@ export class Registry {
 			summary,
 			progress: {},
 			activity: [],
+			beats: [],
 			handling: false,
 			deliveredTokens: 0,
 			log: new MonitorLog(""),
@@ -315,6 +334,11 @@ export class Registry {
 		if (line !== undefined) {
 			record.lastLine = line;
 			record.lastLineAt = now;
+			const previous = record.beats[record.beats.length - 1];
+			if (!previous || now - previous.at >= BEAT_MERGE_MS) {
+				record.beats.push({ at: now, amp: previous && now - previous.at < BEAT_BURST_MS ? 0.55 : 1 });
+				if (record.beats.length > BEATS_KEEP) record.beats.splice(0, record.beats.length - BEATS_KEEP);
+			}
 		}
 	}
 
@@ -366,6 +390,9 @@ export class Registry {
 					)
 						this.deps.persist({ kind: "resolve", id: record.id, target: progress.url });
 					record.progress = { ...record.progress, ...progress };
+					const failing = (record.progress.jobs ?? []).some((j) => j.state === "failure");
+					if (!failing) delete record.failingSince;
+					else record.failingSince ??= this.clock.now();
 					this.deps.onChange();
 				},
 			});

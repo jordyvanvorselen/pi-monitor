@@ -1,15 +1,19 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { RgbColor, TerminalColors, TUI } from "@earendil-works/pi-tui";
 import type { MonitorRecord, Registry } from "../registry.ts";
 import type { Settings } from "../settings.ts";
 import { DockComponent, isVisible, renderDock } from "./dock.ts";
+import { renderRichDock } from "./dock-rich.ts";
+import { lookFor, type TerminalReport, type ThemeColors } from "./look.ts";
 import type { Paint } from "./glyphs.ts";
 import { monitorTitle, piTitle } from "./title.ts";
 
 export const WIDGET_KEY = "monitor";
 
-/** Spinner speed while something runs. */
+/** Spinner speed while something runs (plain dock, title and overlay). */
 export const SPIN_MS = 120;
+/** Frame interval of the colour dock while something animates, about 15 frames per second. */
+export const ANIM_MS = 66;
 /** Clock speed when there is no spinner. */
 export const CLOCK_MS = 1_000;
 /** Tick while only finished rows are fading out, so the flash ends on time. */
@@ -40,6 +44,9 @@ export class UiController {
 	private widgetShown = false;
 	private title: string | undefined;
 	private lastRefresh = 0;
+	/** The terminal's own background and palette, once it answered. Glows and fades blend into it. */
+	private terminal: TerminalReport = {};
+	private backgroundAsked = false;
 	private readonly listeners = new Set<() => void>();
 
 	constructor(deps: ControllerDeps) {
@@ -81,6 +88,11 @@ export class UiController {
 		return this.timer !== undefined;
 	}
 
+	/** Milliseconds between animation ticks, undefined when idle. */
+	get interval(): number | undefined {
+		return this.timerMs;
+	}
+
 	currentFrame(): number {
 		return this.frame;
 	}
@@ -114,20 +126,48 @@ export class UiController {
 		this.deps.notify("pi · monitor", `${glyph} ${record.description}: ${record.summary ?? record.status}`);
 	}
 
-	private draw(width: number, paint: Paint): string[] {
+	private draw(width: number, theme: Paint & ThemeColors): string[] {
 		const settings = this.deps.settings();
-		return renderDock(
-			this.deps.registry.visible(),
-			{
-				width,
-				now: this.deps.now(),
-				frame: this.frame,
-				savedTokens: this.deps.registry.savedTokens(),
-				shortcut: settings.shortcut,
-				reducedMotion: settings.reducedMotion,
-			},
-			paint,
-		);
+		const options = {
+			width,
+			now: this.deps.now(),
+			frame: this.frame,
+			savedTokens: this.deps.registry.savedTokens(),
+			shortcut: settings.shortcut,
+			reducedMotion: settings.reducedMotion,
+		};
+		const records = this.deps.registry.visible();
+		const look = lookFor(theme, this.terminal);
+		return look ? renderRichDock(records, options, look, theme) : renderDock(records, options, theme);
+	}
+
+	/** True when the dock draws in colour with the current theme. */
+	private rich(): boolean {
+		try {
+			return lookFor((this.ctx?.ui.theme ?? {}) as ThemeColors, this.terminal) !== undefined;
+		} catch {
+			return false;
+		}
+	}
+
+	/** Ask the terminal for its background once, so glows blend into the real one. */
+	private askBackground(tui: TUI, theme: ThemeColors): void {
+		if (this.backgroundAsked || typeof tui.queryTerminalColors !== "function" || !lookFor(theme)) return;
+		this.backgroundAsked = true;
+		const apply = (colors: TerminalColors) => {
+			const rgb = (c: RgbColor | undefined) => (c ? ([c.r, c.g, c.b] as const) : undefined);
+			if (!colors.background && !colors.palette?.some(Boolean)) return;
+			this.terminal = {
+				background: rgb(colors.background) ?? this.terminal.background,
+				palette: colors.palette?.some(Boolean) ? colors.palette.map(rgb) : this.terminal.palette,
+			};
+			this.dock?.invalidate();
+			this.tui?.requestRender();
+		};
+		tui
+			.queryTerminalColors({ timeoutMs: 500, onLateReply: apply })
+			.then(apply)
+			.catch(() => {});
 	}
 
 	private refresh(): void {
@@ -145,6 +185,7 @@ export class UiController {
 		} else if (!this.widgetShown) {
 			ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => {
 				this.tui = tui;
+				this.askBackground(tui, theme);
 				this.dock = new DockComponent((width) => this.draw(width, theme));
 				return this.dock;
 			});
@@ -169,13 +210,16 @@ export class UiController {
 		const running = records.some((r) => r.status === "running");
 		const fading = records.some((r) => r.status !== "running" && isVisible(r, now));
 		const calm = this.deps.settings().reducedMotion;
-		const wanted = running ? (calm ? CLOCK_MS : SPIN_MS) : fading ? (calm ? CLOCK_MS : FADE_MS) : undefined;
+		const busy = running ? (calm ? CLOCK_MS : SPIN_MS) : fading ? (calm ? CLOCK_MS : FADE_MS) : undefined;
+		// The colour dock animates by time (dissolves, glows, fades), so it needs a steady frame rate.
+		const wanted = busy !== undefined && !calm && this.rich() ? ANIM_MS : busy;
 		if (wanted === this.timerMs) return;
 		this.stopTimer();
 		if (wanted === undefined) return;
 		this.timerMs = wanted;
 		this.timer = setInterval(() => {
-			this.frame++;
+			// From the clock, not per tick: the spinner keeps its speed whatever the frame rate.
+			this.frame = Math.floor(this.deps.now() / SPIN_MS);
 			this.refresh();
 			this.schedule();
 		}, wanted);

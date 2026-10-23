@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { rgbColor, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import type { MonitorMessageDetails } from "../src/delivery.ts";
 import type { Registry } from "../src/registry.ts";
-import type { UiController } from "../src/ui/controller.ts";
+import { DEFAULT_SETTINGS } from "../src/settings.ts";
+import { ANIM_MS, CLOCK_MS, SPIN_MS, UiController } from "../src/ui/controller.ts";
 import type { DockItem } from "../src/ui/dock.ts";
 import { ganttRows, MonitorsOverlay, type OverlayItem } from "../src/ui/overlay.ts";
 import { renderMonitorMessage } from "../src/ui/renderer.ts";
@@ -287,5 +288,59 @@ describe("UI wiring", () => {
 		assert.equal(internals!.ui.attached, false);
 		assert.equal(internals!.ui.animating, false);
 		await until(() => h.sent.length > 0);
+	});
+});
+
+describe("dock animation timer", () => {
+	const richTheme = {
+		...plainTheme,
+		getColorMode: () => "truecolor" as const,
+		appearance: "dark" as const,
+		colors: { text: rgbColor(230, 232, 235) },
+	};
+
+	function controller(theme: object, reducedMotion = false) {
+		const records = [item({ id: "m1", kind: "command", status: "running", description: "dev server" })];
+		let factory: ((tui: unknown, theme: unknown) => { render(width: number): string[] }) | undefined;
+		const ui = new UiController({
+			registry: { visible: () => records, savedTokens: () => 0 } as unknown as Registry,
+			settings: () => ({ ...DEFAULT_SETTINGS, reducedMotion }),
+			now: () => NOW,
+			sessionName: () => undefined,
+			notify: () => {},
+		});
+		const ctx = {
+			mode: "tui",
+			hasUI: true,
+			cwd: "/tmp/project",
+			ui: {
+				theme,
+				setWidget: (_key: string, content: typeof factory) => (factory = content),
+				setTitle: () => {},
+			},
+		};
+		ui.attach(ctx as never);
+		const render = (width: number) => factory!({ requestRender: () => {} }, theme).render(width);
+		return { ui, render };
+	}
+
+	it("runs the colour dock at about 15 frames per second while something moves", () => {
+		const { ui, render } = controller(richTheme);
+		assert.equal(ui.interval, ANIM_MS);
+		assert.ok(render(100)[0]!.includes("\x1b[38;2;"));
+		ui.detach();
+	});
+
+	it("ticks once a second with reducedMotion, also with the colour dock", () => {
+		const { ui } = controller(richTheme, true);
+		assert.equal(ui.interval, CLOCK_MS);
+		ui.detach();
+	});
+
+	it("keeps the plain spinner speed and rendering for themes without a colour mode", () => {
+		const { ui, render } = controller(plainTheme);
+		assert.equal(ui.interval, SPIN_MS);
+		assert.ok(!render(100).join("\n").includes("\x1b["));
+		ui.detach();
 	});
 });

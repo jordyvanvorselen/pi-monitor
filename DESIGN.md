@@ -195,23 +195,45 @@ Everything the user sees outside the transcript lives in `src/ui/`. Colors come 
 A rounded card, shown only while there is something to show:
 
 ```
-╭─ monitors ───────────────────────────────────────── 2 running · 1 failed · saved ~6.2k tok ─╮
-│ ✗ e2e on staging exited with code 1 after 8m16s                                              │
-│ ⠹ dev server  ▁▁▂▅▇▅▂▁  last: GET /api/users 200 in 12ms · 12s ago   pi is on it ↳  10m00s │
-│ ⠹ CI #42  ●━━●━━◐┄┄○┄┄○  test ▸ Run unit tests                         ▰▰▰▱▱ ~1m  4m10s │
-╰────────────────────────────────────────────────────────────────────── ctrl+shift+m details ─╯
+╭─ ◉ monitors ──────────────────────────────────────────── 3 running · 1 failed · saved ~6.2k tok ─╮
+│ ⠸ e2e #17     ●━━✗┄┄○  checkout ✗ Run cart.spec.ts             pi is on it ↳  ██▌    ~2m   2m10s │
+│ ⠸ dev server  ▁▁╱╲▁▂▂▁▁▁╱╲  last: GET /api/users 200 in 12ms · 1s ago                     10m00s │
+│ ⠸ CI #42      ●━━●━━◐┄┄○  test ▸ Run unit tests                               ████▋  ~1m   4m43s │
+╰─────────────────────────────────────────────────────────────────────────── ctrl+shift+m details ─╯
 ```
 
 - Title "monitors" in the top border, summary on the right: running, failed and the token savings meter.
 - Each row starts with a spinner (red when a job already failed, `‖` when paused) and the name. For GitHub sources the name is an OSC 8 link to the run or PR.
 - `gh_run`/`gh_pr` rows: job track (`●` done, `◐` running, `○` queued, `✗` failed, `◌` skipped; solid links after finished jobs), current job `▸` step, ETA bar from the median of the last ten green runs, elapsed time. Long tracks shrink, very long ones become `12/30`.
-- `command`, `file`, `url`, `pid` rows: sparkline of lines per 10 s, then `last: <line> · 12s ago`. The age dims after a minute and turns into a warning `quiet 5m` after five minutes.
+- `command`, `file`, `url`, `pid` rows: heartbeat (ECG: solid `▁` baseline, a full-height `╱╲` spike and a low `▂▂` bump per arriving line, a smaller `▂▃▂` blip for lines in a burst, scrolling 4 cells a second, bright head and a tail that fades only near its end). Box and block characters, because terminals draw them edge to edge, where braille dots read as noise, then `last: <line> · 12s ago`. The age dims after a minute and turns into a warning `quiet 5m` after five minutes.
 - `pi is on it ↳` while the model handles a message from that monitor: from the message (or the turn it triggers) until `agent_settled`.
 - Failures first, then running monitors (oldest first), then finished ones. More than four rows: the three most important plus `+2 more · /monitors`.
 
+### Colour (dock v2)
+
+With Pi's theme the dock is drawn cell by cell (`src/ui/dock-rich.ts`, `cells.ts`, `effects.ts`, `look.ts`). Rounded border in a gradient with a light sweep every 6 s, pulsing header dot and shimmering `monitors` title, gradient job track with a turning running node and a glint, eighth-block ETA bar with a shimmer, `pi is on it ↳` shimmer.
+
+Colour roles come from the theme (`look.ts`, `ROLE_TOKENS`). The launch video palette (teal `#3CF2C8`, indigo `#7C8CFF`, red `#FF5F6D`, gold `#FFD66B`) maps to tokens:
+
+| Role             | Theme token                          | Used for                                                     |
+| ---------------- | ------------------------------------ | ------------------------------------------------------------ |
+| `success` (teal) | `success`                            | spinner, done jobs, ✓, green flash, gradient start           |
+| `link` (indigo)  | `mdLink`, else `border`/`accent`     | gradient end of title, track, heartbeat tail, shimmer        |
+| `border`         | `border`, else `mdLink`/`accent`     | gradient end of the card border                              |
+| `error` (red)    | `error`                              | failed jobs, ✗, failing spinner, red glow                    |
+| `warning` (gold) | `warning`                            | running job node, ETA start, overtime, countdown, `quiet 5m` |
+| text tones       | `text`, `muted`, `dim`, `toolOutput` | names, labels, ages, last line                               |
+
+- Theme colours given as ANSI indexes 0-15 resolve through the palette the terminal reports. A role without a token uses the video palette (dark) or a deeper version of it (light). Accents are pushed toward black or white until they reach a 3:1 contrast with the background.
+- Gradients, glows and fades blend into the terminal's real background (asked once with `tui.queryTerminalColors`; until it answers, the theme's appearance decides between a dark and a white guess). The "highlight" for hot tips, glints, the shimmer and the border sweep is white on dark backgrounds and a near-black text colour on light ones, so nothing turns white on white. Light backgrounds get 60% glow strength, a stronger border and a stronger heartbeat tail.
+- Everything is a pure function of the clock, so frames are testable. The controller ticks every 66 ms (about 15 fps) while something is visible and not `reducedMotion`, and stops when nothing is.
+- Failing runs breathe red. A green run flashes.
+- 256-colour terminals get the nearest colours (Pi's `foregroundAnsi`) and no background tints. Only themes without `getColorMode` (not Pi's theme) use the plain renderer in `dock.ts`.
+- `reducedMotion`: same colours, no spinner, shimmer, sweep, glow, flash or dissolve. Clocks and the heartbeat move once a second.
+
 ### Moments
 
-- A finished row flashes in success or error color for 1.5 s, then collapses to `✓ CI #42 green in 6m02s` and disappears after 10 s.
+- A finished row keeps its last running layout for 0.3 s (`✓`, all jobs passed, ETA `done`), dissolves right to left into `✓ CI #42 green in 6m02s` over 0.7 s, shows it bold in the result colour, settles to muted and disappears after 10 s. Without colour it flashes for 1.5 s.
 - Terminal title via `ctx.ui.setTitle`: `⠹ pi · CI 3/5` while running, `✓ CI green` or `✗ CI failed` for 10 s after the end, then Pi's own `π - <session> - <dir>`.
 - Desktop notification on success, failure and timeout: OSC 99 (kitty), OSC 9 (iTerm2) or OSC 777 (others). Setting `desktopNotifications`.
 - Token savings meter: a polling loop would cost one call per full 30 s of watching at about 200 tokens. Savings are that minus the tokens pi-monitor delivered, summed over monitors that may wake the model. It ignores the cost of re-reading the growing context, so the real saving is larger. See `src/savings.ts`.
@@ -219,7 +241,7 @@ A rounded card, shown only while there is something to show:
 ### Responsive
 
 - Wide (≥ 88 columns inside the card): everything.
-- Medium (56–87): no sparkline and no ETA.
+- Medium (56–87): no heartbeat and no ETA.
 - Narrow (< 56): `⠹ CI #42 2/5 4m`.
 - The dock never folds or hides itself: it shows the full card whenever monitors exist, also while the agent works, and disappears only when there are none. A real-session test showed a folded one-line dock reads as a broken UI. Only a terminal too narrow for a card (< 24 columns) gets one line.
 - There is no footer status; the dock already says it all.
@@ -227,7 +249,7 @@ A rounded card, shown only while there is something to show:
 
 ### Probation rows
 
-A bash command the safety net runs shows at once as `⏳ yarn dev  ▁▂▅  last: … · 2s ago   background in 9s`, with a dim countdown instead of the clock. It counts as running in the summary. If it ends in time, bash gets its result and the row disappears quietly: no flash, no finished row, no title, no notification, no savings. If it moves to the background, it becomes a normal running row.
+A bash command the safety net runs shows at once as `⏳ yarn dev  ▁╱╲▁▂▂  last: … · 2s ago   background in 9s`, with a countdown instead of the clock. It counts as running in the summary. If it ends in time, bash gets its result and the row disappears quietly: no flash, no finished row, no title, no notification, no savings. If it moves to the background, it becomes a normal running row.
 
 ### `/monitors` overlay
 
@@ -327,13 +349,22 @@ src/
   sources/
     types.ts index.ts command.ts gh.ts gh-run.ts gh-pr.ts file.ts url.ts pid.ts
   ui/
-    glyphs.ts       spinner, job track, ETA bar, sparkline
+    glyphs.ts       spinner, job track, ETA bar, sparkline (plain dock, overlay)
     dock.ts         dock rendering and component
+    dock-rich.ts    dock v2: colour rows, card, glows, dissolve
+    effects.ts      heartbeat, gradient track, ETA bar, border sweep
+    cells.ts        cell lines, truncation, dissolve, ANSI encoding
+    color.ts        colour math, contrast and palette
+    look.ts         theme tokens → colour roles, terminal background
     title.ts        terminal title
     controller.ts   widget, status, title, notifications, timer
     overlay.ts      /monitors
     renderer.ts     transcript messages
     bash-renderer.ts "→ monitor m3" under intercepted bash results
+scripts/
+  record-dock.ts    renders the real dock for docs/dock.gif (agg per frame, ffmpeg joins)
+  dock-story.ts     the scripted fake monitors of that recording
+  pi-theme.ts       Pi's built-in themes, for tests and the recording
 tests/
   format, delivery (fake clock), gh (JSON fixtures), command (real processes, group kill),
   sources (file, url, pid), patterns, triage (fake classifier), safety net (real processes), intercept, registry, resume, dock (several widths, stub theme), ui, extension

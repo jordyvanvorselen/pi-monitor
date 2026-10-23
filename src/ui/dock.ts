@@ -1,6 +1,6 @@
 import { hyperlink, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { formatDuration, formatShortDuration, formatTokens } from "../format.ts";
-import type { ActivityBucket, MonitorStatus } from "../registry.ts";
+import type { ActivityBucket, Beat, MonitorStatus } from "../registry.ts";
 import type { Progress, SourceKind } from "../sources/types.ts";
 import { etaBar, jobCounts, jobTrack, type Paint, sparkline, spinner } from "./glyphs.ts";
 
@@ -18,6 +18,10 @@ export interface DockItem {
 	lastLine?: string;
 	lastLineAt?: number;
 	activity: ActivityBucket[];
+	/** Recent line arrivals, for the heartbeat. */
+	beats?: readonly Beat[];
+	/** When a running GitHub run first showed a failed job. */
+	failingSince?: number;
 	handling: boolean;
 	/** Safety-net probation: moves to the background at this time unless it ends first. */
 	probationUntil?: number;
@@ -41,8 +45,9 @@ export const STALE_MS = 5 * 60_000;
 /** With more rows than this the card shows the most important ones plus "+N more". */
 export const MAX_ROWS = 4;
 
-const WIDE = 88;
-const MEDIUM = 56;
+/** Inner widths from which rows get the job track and detail (medium), and ETA and heartbeat (wide). */
+export const WIDE = 88;
+export const MEDIUM = 56;
 
 export function isVisible(item: DockItem, now: number): boolean {
 	return item.status === "running" || (item.endedAt !== undefined && now - item.endedAt < LINGER_MS);
@@ -89,7 +94,7 @@ const END_GLYPH: Record<Exclude<MonitorStatus, "running">, [string, "success" | 
 	ended: ["◌", "dim"],
 };
 
-function finishedText(item: DockItem): string {
+export function finishedText(item: DockItem): string {
 	const name = displayName(item);
 	const summary = item.status === "ended" ? "ended with the session" : (item.summary ?? item.status);
 	return summary.startsWith(name) ? summary : `${name} ${summary}`;
@@ -120,7 +125,7 @@ function age(ms: number, paint: Paint): string {
 	return paint.fg(ms < 60_000 ? "muted" : "dim", `${formatShortDuration(ms)} ago`);
 }
 
-const WAITING: Record<SourceKind, string> = {
+export const WAITING: Record<SourceKind, string> = {
 	command: "waiting for output",
 	file: "waiting for new lines",
 	url: "waiting for 2xx",
