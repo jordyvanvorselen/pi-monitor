@@ -33,6 +33,11 @@ monitor({ description: "CI for PR #42", gh_run: "latest" })
 
 A dock appears above the editor:
 
+![The pi-monitor dock: CI #42 runs its jobs while a dev server shows a heartbeat line and yarn dev counts down to the background. The test job fails with a red glow and "pi is on it", is re-run, and the run goes green, flashes and collapses to "CI #42 green in 6m02s".](https://raw.githubusercontent.com/jordyvanvorselen/pi-monitor/main/docs/dock.gif)
+
+<details>
+<summary>The dock as text</summary>
+
 ```
 ╭─ ◉ monitors ──────────────────────────────────────────── 3 running · 1 failed · saved ~6.2k tok ─╮
 │ ⠸ e2e #17     ●━━✗┄┄○  checkout ✗ Run cart.spec.ts             pi is on it ↳  ██▌    ~2m   2m10s │
@@ -40,6 +45,8 @@ A dock appears above the editor:
 │ ⠸ CI #42      ●━━●━━◐┄┄○  test ▸ Run unit tests                               ████▋  ~1m   4m43s │
 ╰─────────────────────────────────────────────────────────────────────────── ctrl+shift+m details ─╯
 ```
+
+</details>
 
 When a job fails, the model gets one short message with the tail of the failed log:
 
@@ -189,6 +196,8 @@ npm test
 ```
 
 Run `npm run lint:fix` to fix lint and formatting problems. Tests never call the real `gh`: sources get a `run()` function that the tests replace with recorded JSON fixtures.
+
+The dock animation in this README is recorded from the real dock renderer. After changing the dock, run `npm run record:dock` to write a new `docs/dock.gif`. It needs [agg](https://github.com/asciinema/agg) (`brew install agg`). The story of fake monitors is in `scripts/dock-story.ts`. The GIF is not part of the npm package.
 
 ## Versioning and releases
 

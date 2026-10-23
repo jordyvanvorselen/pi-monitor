@@ -361,6 +361,10 @@ src/
     overlay.ts      /monitors
     renderer.ts     transcript messages
     bash-renderer.ts "→ monitor m3" under intercepted bash results
+scripts/
+  record-dock.ts    renders the real dock for docs/dock.gif (asciicast → agg)
+  dock-story.ts     the scripted fake monitors of that recording
+  pi-theme.ts       Pi's built-in themes, for tests and the recording
 tests/
   format, delivery (fake clock), gh (JSON fixtures), command (real processes, group kill),
   sources (file, url, pid), patterns, triage (fake classifier), safety net (real processes), intercept, registry, resume, dock (several widths, stub theme), ui, extension

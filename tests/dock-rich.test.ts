@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
-import { Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { rgbColor, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import type { Job } from "../src/sources/types.ts";
 import { type Cell, cells, cellText, encode, fitCells, flatten, morph, truncCells } from "../src/ui/cells.ts";
@@ -21,6 +19,7 @@ import {
 } from "../src/ui/dock-rich.ts";
 import { ECG_DOT_MS, ecgCells, ecgText, etaCells, trackCells } from "../src/ui/effects.ts";
 import { MIN_CONTRAST, ROLE_TOKENS } from "../src/ui/look.ts";
+import { piTheme } from "../scripts/pi-theme.ts";
 import { plainTheme } from "./helpers.ts";
 
 const NOW = 1_700_000_400_000;
@@ -32,20 +31,6 @@ function richTheme(mode: "truecolor" | "256color" = "truecolor", appearance: "da
 		appearance,
 		colors: { text: rgbColor(230, 232, 235), muted: rgbColor(140, 144, 150), dim: rgbColor(90, 94, 100) },
 	};
-}
-
-/** One of Pi's built-in themes, built from its JSON the way Pi does. */
-function piTheme(name: "dark" | "light", mode: "truecolor" | "256color" = "truecolor"): Theme {
-	const dir = fileURLToPath(
-		new URL("modes/interactive/theme/", import.meta.resolve("@earendil-works/pi-coding-agent")),
-	);
-	const json = JSON.parse(readFileSync(`${dir}${name}.json`, "utf8")) as {
-		vars?: Record<string, string>;
-		colors: Record<string, string | number>;
-	};
-	const resolve = (v: string | number) => (typeof v === "string" && json.vars?.[v]) || v;
-	const colors = Object.fromEntries(Object.entries(json.colors).map(([k, v]) => [k, resolve(v)]));
-	return new Theme(colors as never, colors as never, mode, { name, appearance: name });
 }
 
 function tokenRgb(theme: Theme, token: string): Rgb {
