@@ -195,23 +195,32 @@ Everything the user sees outside the transcript lives in `src/ui/`. Colors come 
 A rounded card, shown only while there is something to show:
 
 ```
-╭─ monitors ───────────────────────────────────────── 2 running · 1 failed · saved ~6.2k tok ─╮
-│ ✗ e2e on staging exited with code 1 after 8m16s                                              │
-│ ⠹ dev server  ▁▁▂▅▇▅▂▁  last: GET /api/users 200 in 12ms · 12s ago   pi is on it ↳  10m00s │
-│ ⠹ CI #42  ●━━●━━◐┄┄○┄┄○  test ▸ Run unit tests                         ▰▰▰▱▱ ~1m  4m10s │
-╰────────────────────────────────────────────────────────────────────── ctrl+shift+m details ─╯
+╭─ ◉ monitors ──────────────────────────────────────────── 3 running · 1 failed · saved ~6.2k tok ─╮
+│ ⠸ e2e #17     ●━━✗┄┄○  checkout ✗ Run cart.spec.ts             pi is on it ↳  ██▌    ~2m   2m10s │
+│ ⠸ dev server  ⠤⠤⢄⠎⢆⠔⠤⡰⠱⡠⠒⠤  last: GET /api/users 200 in 12ms · 1s ago                     10m00s │
+│ ⠸ CI #42      ●━━●━━◐┄┄○  test ▸ Run unit tests                               ████▋  ~1m   4m43s │
+╰─────────────────────────────────────────────────────────────────────────── ctrl+shift+m details ─╯
 ```
 
 - Title "monitors" in the top border, summary on the right: running, failed and the token savings meter.
 - Each row starts with a spinner (red when a job already failed, `‖` when paused) and the name. For GitHub sources the name is an OSC 8 link to the run or PR.
 - `gh_run`/`gh_pr` rows: job track (`●` done, `◐` running, `○` queued, `✗` failed, `◌` skipped; solid links after finished jobs), current job `▸` step, ETA bar from the median of the last ten green runs, elapsed time. Long tracks shrink, very long ones become `12/30`.
-- `command`, `file`, `url`, `pid` rows: sparkline of lines per 10 s, then `last: <line> · 12s ago`. The age dims after a minute and turns into a warning `quiet 5m` after five minutes.
+- `command`, `file`, `url`, `pid` rows: heartbeat (braille ECG, one QRS blip per arriving line, scrolling 8 dot columns per second, bright head and fading tail), then `last: <line> · 12s ago`. The age dims after a minute and turns into a warning `quiet 5m` after five minutes.
 - `pi is on it ↳` while the model handles a message from that monitor: from the message (or the turn it triggers) until `agent_settled`.
 - Failures first, then running monitors (oldest first), then finished ones. More than four rows: the three most important plus `+2 more · /monitors`.
 
+### Colour (dock v2)
+
+With Pi's theme on a dark background the dock is drawn cell by cell (`src/ui/dock-rich.ts`, `cells.ts`, `effects.ts`) in the launch video palette: teal `#3CF2C8`, indigo `#7C8CFF`, red `#FF5F6D`, gold `#FFD66B`. Text tones come from the theme. Rounded border in a teal → indigo gradient with a light sweep every 6 s, pulsing header dot and shimmering `monitors` title, gradient job track with a turning gold running node and a glint, eighth-block ETA bar gold → teal with a shimmer, `pi is on it ↳` shimmer.
+
+- Everything is a pure function of the clock, so frames are testable. The controller ticks every 66 ms (about 15 fps) while something is visible and not `reducedMotion`, and stops when nothing is.
+- Glows are background tints around a row, two lines up and down, faded into the terminal's own background (asked once with `tui.queryTerminalColors`). Failing runs breathe red. A green run flashes teal.
+- 256-colour terminals get the nearest colours (Pi's `foregroundAnsi`) and no background tints. Light themes or light terminals, and themes without `getColorMode`, use the plain renderer in `dock.ts`.
+- `reducedMotion`: same colours, no spinner, shimmer, sweep, glow, flash or dissolve. Clocks and the heartbeat move once a second.
+
 ### Moments
 
-- A finished row flashes in success or error color for 1.5 s, then collapses to `✓ CI #42 green in 6m02s` and disappears after 10 s.
+- A finished row keeps its last running layout for 0.3 s (`✓`, all jobs passed, ETA `done`), dissolves right to left into `✓ CI #42 green in 6m02s` over 0.7 s, shows it bold in the result colour, settles to muted and disappears after 10 s. Without colour it flashes for 1.5 s.
 - Terminal title via `ctx.ui.setTitle`: `⠹ pi · CI 3/5` while running, `✓ CI green` or `✗ CI failed` for 10 s after the end, then Pi's own `π - <session> - <dir>`.
 - Desktop notification on success, failure and timeout: OSC 99 (kitty), OSC 9 (iTerm2) or OSC 777 (others). Setting `desktopNotifications`.
 - Token savings meter: a polling loop would cost one call per full 30 s of watching at about 200 tokens. Savings are that minus the tokens pi-monitor delivered, summed over monitors that may wake the model. It ignores the cost of re-reading the growing context, so the real saving is larger. See `src/savings.ts`.
@@ -219,7 +228,7 @@ A rounded card, shown only while there is something to show:
 ### Responsive
 
 - Wide (≥ 88 columns inside the card): everything.
-- Medium (56–87): no sparkline and no ETA.
+- Medium (56–87): no heartbeat and no ETA.
 - Narrow (< 56): `⠹ CI #42 2/5 4m`.
 - The dock never folds or hides itself: it shows the full card whenever monitors exist, also while the agent works, and disappears only when there are none. A real-session test showed a folded one-line dock reads as a broken UI. Only a terminal too narrow for a card (< 24 columns) gets one line.
 - There is no footer status; the dock already says it all.
@@ -227,7 +236,7 @@ A rounded card, shown only while there is something to show:
 
 ### Probation rows
 
-A bash command the safety net runs shows at once as `⏳ yarn dev  ▁▂▅  last: … · 2s ago   background in 9s`, with a dim countdown instead of the clock. It counts as running in the summary. If it ends in time, bash gets its result and the row disappears quietly: no flash, no finished row, no title, no notification, no savings. If it moves to the background, it becomes a normal running row.
+A bash command the safety net runs shows at once as `⏳ yarn dev  ⠤⡰⠱⡠⠒  last: … · 2s ago   background in 9s`, with a countdown instead of the clock. It counts as running in the summary. If it ends in time, bash gets its result and the row disappears quietly: no flash, no finished row, no title, no notification, no savings. If it moves to the background, it becomes a normal running row.
 
 ### `/monitors` overlay
 
@@ -327,8 +336,12 @@ src/
   sources/
     types.ts index.ts command.ts gh.ts gh-run.ts gh-pr.ts file.ts url.ts pid.ts
   ui/
-    glyphs.ts       spinner, job track, ETA bar, sparkline
+    glyphs.ts       spinner, job track, ETA bar, sparkline (plain dock, overlay)
     dock.ts         dock rendering and component
+    dock-rich.ts    dock v2: colour rows, card, glows, dissolve
+    effects.ts      heartbeat, gradient track, ETA bar, border sweep
+    cells.ts        cell lines, truncation, dissolve, ANSI encoding
+    color.ts        colour math and palette
     title.ts        terminal title
     controller.ts   widget, status, title, notifications, timer
     overlay.ts      /monitors

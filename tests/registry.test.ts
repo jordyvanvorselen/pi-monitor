@@ -8,6 +8,7 @@ import { defaultRun } from "../src/exec.ts";
 import { MonitorLog } from "../src/log.ts";
 import { MonitorLimitError, Registry, startMonitor, type MonitorEntry } from "../src/registry.ts";
 import { buildSource } from "../src/sources/index.ts";
+import type { Source, SourceContext } from "../src/sources/types.ts";
 import { FakeClock, until } from "./helpers.ts";
 
 function registry(maxConcurrent = 5, clock?: FakeClock) {
@@ -152,5 +153,78 @@ describe("stop reasons", () => {
 		assert.match(written.summary, /^stopped at session shutdown after/);
 		await until(() => record.status !== "running");
 		assert.equal(entries.filter((e) => e.kind === "end").length, 1, "no second end entry");
+	});
+});
+
+describe("heartbeat data", () => {
+	function scripted(clock: FakeClock, script: (ctx: SourceContext) => void) {
+		const dir = mkdtempSync(join(tmpdir(), "pi-monitor-beats-"));
+		const source: Source = {
+			kind: "command",
+			label: "scripted",
+			start: async (ctx) => {
+				await new Promise((resolve) => setImmediate(resolve));
+				script(ctx);
+				return { status: "success", summary: "done" };
+			},
+		};
+		const reg = new Registry({
+			delivery: new Delivery({ send: () => {}, isIdle: () => true, clock }),
+			buildSource: () => source,
+			openLog: (id) => MonitorLog.open(dir, id),
+			run: defaultRun,
+			cwd: () => tmpdir(),
+			maxConcurrent: () => 5,
+			persist: () => {},
+			onChange: () => {},
+			clock,
+		});
+		const spec = {
+			description: "scripted",
+			kind: "command" as const,
+			target: "x",
+			wake: "never" as const,
+			timeoutMinutes: 5,
+			cwd: "",
+			reportOutput: false,
+		};
+		return startMonitor(reg, spec).record;
+	}
+
+	it("records a beat per line, merges lines within one dot column and draws bursts as small blips", async () => {
+		const clock = new FakeClock();
+		const t0 = clock.now();
+		const record = scripted(clock, (ctx) => {
+			ctx.line("a");
+			clock.advance(50);
+			ctx.line("b");
+			clock.advance(200);
+			ctx.line("c");
+			clock.advance(2_000);
+			ctx.line("d");
+		});
+		await until(() => record.status !== "running");
+		assert.deepEqual(record.beats, [
+			{ at: t0, amp: 1 },
+			{ at: t0 + 250, amp: 0.55 },
+			{ at: t0 + 2_250, amp: 1 },
+		]);
+	});
+
+	it("remembers when a run first showed a failed job and forgets it once no job has failed", async () => {
+		const clock = new FakeClock();
+		const t0 = clock.now();
+		const seen: (number | undefined)[] = [];
+		const record = scripted(clock, (ctx) => {
+			ctx.update({ jobs: [{ name: "test", state: "failure" }] });
+			seen.push(record.failingSince);
+			clock.advance(1_000);
+			ctx.update({ jobs: [{ name: "test", state: "failure" }] });
+			seen.push(record.failingSince);
+			ctx.update({ jobs: [{ name: "test", state: "running" }] });
+			seen.push(record.failingSince);
+		});
+		await until(() => record.status !== "running");
+		assert.deepEqual(seen, [t0, t0, undefined]);
 	});
 });

@@ -1,0 +1,481 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { rgbColor, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import type { Job } from "../src/sources/types.ts";
+import { type Cell, cells, cellText, encode, fitCells, flatten, morph, truncCells } from "../src/ui/cells.ts";
+import { clamp, hex, mix, pack, PALETTE, smooth } from "../src/ui/color.ts";
+import type { DockItem, DockOptions } from "../src/ui/dock.ts";
+import {
+	FADE_IN_MS,
+	HOLD_MS,
+	lookFor,
+	MORPH_MS,
+	renderRichDock,
+	richRow,
+	SETTLE_AT_MS,
+	SETTLE_MS,
+	type ThemeColors,
+} from "../src/ui/dock-rich.ts";
+import { ECG_DOT_MS, ecgCells, ecgText, etaCells, trackCells } from "../src/ui/effects.ts";
+import { plainTheme } from "./helpers.ts";
+
+const NOW = 1_700_000_400_000;
+
+function richTheme(mode: "truecolor" | "256color" = "truecolor", appearance: "dark" | "light" = "dark") {
+	return {
+		...plainTheme,
+		getColorMode: () => mode,
+		appearance,
+		colors: { text: rgbColor(230, 232, 235), muted: rgbColor(140, 144, 150), dim: rgbColor(90, 94, 100) },
+	};
+}
+
+const look = lookFor(richTheme())!;
+const look256 = lookFor(richTheme("256color"))!;
+const still = { now: NOW, motion: false };
+
+function item(partial: Partial<DockItem> & Pick<DockItem, "id" | "kind" | "status">): DockItem {
+	return {
+		description: partial.id,
+		paused: false,
+		startedAt: NOW - 250_000,
+		progress: {},
+		activity: [],
+		handling: false,
+		...partial,
+	};
+}
+
+const jobs: Job[] = [
+	{ name: "build", state: "success" },
+	{ name: "lint", state: "success" },
+	{ name: "test", state: "running", step: "Run unit tests" },
+	{ name: "e2e", state: "queued" },
+];
+
+const ci = item({
+	id: "ci",
+	kind: "gh_run",
+	status: "running",
+	startedAt: NOW - 284_000,
+	progress: { title: "CI #42", url: "https://github.com/acme/app/actions/runs/1", jobs, etaMs: 360_000 },
+});
+const beats = Array.from({ length: 30 }, (_, i) => ({ at: NOW - 30_000 + i * 1_000, amp: i % 4 ? 1 : 0.55 }));
+const devServer = item({
+	id: "dev",
+	kind: "command",
+	status: "running",
+	description: "dev server",
+	startedAt: NOW - 600_000,
+	lastLine: "GET /api/users 200 in 12ms",
+	lastLineAt: NOW - 1_000,
+	beats,
+});
+const probation = item({
+	id: "yarn",
+	kind: "command",
+	status: "running",
+	description: "yarn dev",
+	startedAt: NOW - 3_000,
+	probationUntil: NOW + 8_200,
+	lastLine: "ready in 420 ms",
+	lastLineAt: NOW - 1_000,
+	beats: [{ at: NOW - 1_000, amp: 1 }],
+});
+const failing = item({
+	id: "e2e",
+	kind: "gh_run",
+	status: "running",
+	startedAt: NOW - 131_000,
+	handling: true,
+	failingSince: NOW - 4_000,
+	progress: {
+		title: "e2e #17",
+		etaMs: 300_000,
+		jobs: [
+			{ name: "setup", state: "success" },
+			{ name: "checkout", state: "failure", step: "Run cart.spec.ts" },
+			{ name: "pay", state: "queued" },
+		],
+	},
+});
+const green = (endedAgo: number) =>
+	item({
+		id: "ci41",
+		kind: "gh_run",
+		status: "success",
+		startedAt: NOW - 400_000,
+		endedAt: NOW - endedAgo,
+		summary: "CI #41 green in 6m02s",
+		progress: { title: "CI #41", jobs: jobs.map((j) => ({ ...j, state: "success" as const })), etaMs: 360_000 },
+	});
+
+function options(partial: Partial<DockOptions> = {}): DockOptions {
+	return {
+		width: 130,
+		now: NOW,
+		frame: 0,
+		savedTokens: 6_200,
+		shortcut: "ctrl+shift+m",
+		reducedMotion: false,
+		...partial,
+	};
+}
+
+/** Escape codes made readable, so patterns can match them. */
+const visible = (line: string) => line.replaceAll("\x1b", "ESC");
+const plain = (lines: string[]) => lines.map((l) => stripTerminalSequences(l));
+const text = (cs: readonly Cell[]) => cellText(cs).replace(/\s+$/, "");
+
+describe("colour math", () => {
+	it("blends from a to b and clamps the amount", () => {
+		assert.deepEqual(mix([0, 0, 0], [200, 100, 50], 0.5), [100, 50, 25]);
+		assert.deepEqual(mix([0, 0, 0], [200, 100, 50], 2), [200, 100, 50]);
+		assert.deepEqual(mix([0, 0, 0], [200, 100, 50], -1), [0, 0, 0]);
+	});
+
+	it("eases with smoothstep and clamps outside 0-1", () => {
+		assert.equal(smooth(-1), 0);
+		assert.equal(smooth(0.5), 0.5);
+		assert.equal(smooth(3), 1);
+		assert.equal(clamp(5, 0, 2), 2);
+	});
+
+	it("packs rounded channels so tiny float differences do not cause extra escape codes", () => {
+		assert.equal(pack([60.2, 241.6, 200.4]), pack(hex("#3CF2C8")));
+		assert.equal(pack([300, -5, 0]), 0xff0000);
+	});
+});
+
+describe("cells", () => {
+	it("gives a wide grapheme two cells so widths match the terminal", () => {
+		const cs = cells("⏳ a", PALETTE.gold);
+		assert.equal(cs.length, 4);
+		assert.equal(cs[1]!.ch, "");
+	});
+
+	it("drops control characters that would break the grid", () => {
+		assert.equal(cellText(cells("a\tb\u0007c", PALETTE.text)), "abc");
+	});
+
+	it("never cuts a wide grapheme in half when truncating", () => {
+		const cut = truncCells(cells("ab⏳", PALETTE.text), 3, PALETTE.text);
+		assert.equal(cellText(cut), "ab…");
+		const between = truncCells(cells("a⏳bc", PALETTE.text), 3, PALETTE.text);
+		assert.equal(visibleWidth(encode(between, "truecolor")), 3);
+	});
+
+	it("fits left and right into exactly the given width and drops the right side when it does not fit", () => {
+		const left = cells("left side", PALETTE.text);
+		const right = cells("right", PALETTE.text);
+		assert.equal(cellText(fitCells(left, right, 20, PALETTE.text)), "left side      right");
+		assert.equal(cellText(fitCells(left, right, 8, PALETTE.text)), "left si…");
+	});
+
+	it("dissolves line a into line b from right to left", () => {
+		const a = cells("aaaa", PALETTE.text);
+		const b = cells("bbbb", PALETTE.text);
+		assert.equal(cellText(morph(a, b, 0)), "aaaa");
+		assert.equal(cellText(morph(a, b, 1)), "bbbb");
+		assert.equal(cellText(morph(a, b, 0.5)), "aabb");
+	});
+
+	it("fades text into the background with alpha", () => {
+		const [faded] = flatten(cells("x", [200, 200, 200]), 0.5, [0, 0, 0]);
+		assert.deepEqual(faded!.fg, [100, 100, 100]);
+	});
+
+	it("encodes 24-bit colour, emits only changes and ends with a reset", () => {
+		const line = [...cells("ab", [1, 2, 3]), ...cells("c", [1, 2, 3], { bold: true })];
+		assert.equal(encode(line, "truecolor"), "\x1b[38;2;1;2;3mab\x1b[1mc\x1b[0m");
+	});
+
+	it("encodes 256 colours for terminals without truecolor", () => {
+		const line = encode(cells("x", PALETTE.teal, { bg: [40, 40, 40] }), "256color");
+		assert.match(visible(line), /ESC\[48;5;\d+mESC\[38;5;\d+mx/);
+		assert.doesNotMatch(line, /;2;/);
+	});
+
+	it("wraps linked cells in one OSC 8 hyperlink", () => {
+		const line = encode(cells("CI", PALETTE.text, { link: "https://x.test" }), "truecolor");
+		assert.ok(line.includes("\x1b]8;;https://x.test\x1b\\"));
+		assert.ok(line.includes("CI\x1b]8;;\x1b\\"));
+	});
+});
+
+describe("heartbeat", () => {
+	const col = (n: number) => n * ECG_DOT_MS;
+
+	it("draws a flat baseline without lines", () => {
+		assert.equal(ecgText([], col(1007), 3), "⠤⠤⠤");
+	});
+
+	it("draws a full QRS beat for a line", () => {
+		assert.equal(ecgText([{ at: col(1000), amp: 1 }], col(1007), 5), "⠤⡰⠱⡠⠒");
+	});
+
+	it("scrolls left one dot column every 125 ms", () => {
+		assert.equal(ecgText([{ at: col(1000), amp: 1 }], col(1009), 5), "⡰⠱⡠⠒⠤");
+	});
+
+	it("draws a smaller blip that never reaches the top row for lines in a burst", () => {
+		const blip = ecgText([{ at: col(1000), amp: 0.55 }], col(1007), 5);
+		assert.notEqual(blip, "⠤⡰⠱⡠⠒");
+		for (const ch of blip) assert.equal((ch.charCodeAt(0) - 0x2800) & 0x09, 0, `${ch} lights the top row`);
+	});
+
+	it("stays blank before the monitor started", () => {
+		assert.equal(ecgText([], col(1007), 5, col(1004)), "   ⠤⠤");
+	});
+
+	it("is bright at the head and fades into the background at the tail", () => {
+		const trace = ecgCells([], col(1007), 6, look, still);
+		const brightness = (c: Cell) => c.fg[0] + c.fg[1] + c.fg[2];
+		assert.ok(brightness(trace[5]!) > brightness(trace[2]!));
+		assert.ok(brightness(trace[2]!) > brightness(trace[0]!));
+		assert.equal(trace[5]!.bold, true);
+	});
+
+	it("lights the head cell background only right after a line arrives", () => {
+		const hot = ecgCells([{ at: NOW - 100, amp: 1 }], NOW, 4, look, { now: NOW, motion: true });
+		assert.ok(hot[3]!.bg);
+		const cool = ecgCells([{ at: NOW - 2_000, amp: 1 }], NOW, 4, look, { now: NOW, motion: true });
+		assert.equal(cool[3]!.bg, undefined);
+	});
+});
+
+describe("ETA bar", () => {
+	it("fills with eighth blocks for a smooth edge", () => {
+		assert.equal(cellText(etaCells(180_000, 360_000, 5, look, still)), "██▌   ~3m");
+	});
+
+	it("shows overtime and done", () => {
+		assert.equal(cellText(etaCells(420_000, 360_000, 5, look, still)), "█████ +1m");
+		assert.equal(cellText(etaCells(360_000, 360_000, 5, look, still, { done: true })), "█████ done");
+	});
+
+	it("runs from gold to teal over a recessed track", () => {
+		const bar = etaCells(360_000, 360_000, 5, look, still);
+		assert.deepEqual(bar[0]!.fg, PALETTE.gold);
+		assert.deepEqual(bar[4]!.fg, PALETTE.teal);
+		assert.ok(bar.slice(0, 5).every((c) => c.bg));
+	});
+
+	it("uses dots instead of a background track in 256 colours", () => {
+		assert.equal(cellText(etaCells(180_000, 360_000, 5, look256, still)), "██▌·· ~3m");
+	});
+});
+
+describe("job track", () => {
+	it("keeps the glyphs of the plain track", () => {
+		assert.equal(cellText(trackCells(jobs, 30, look, still)), "●━━●━━◐┄┄○");
+	});
+
+	it("turns the running node over time", () => {
+		const at = (ms: number) => cellText(trackCells(jobs, 30, look, { now: ms, motion: true }))[6];
+		assert.deepEqual([0, 170, 340, 510].map(at), ["◐", "◓", "◑", "◒"]);
+	});
+
+	it("keeps the running node still without motion", () => {
+		assert.equal(cellText(trackCells(jobs, 30, look, { now: 170, motion: false }))[6], "◐");
+	});
+
+	it("falls back to a count when the track does not fit", () => {
+		assert.equal(cellText(trackCells(jobs, 5, look, still)), "2/4");
+	});
+});
+
+describe("choosing the look", () => {
+	it("uses the colour dock with Pi's theme on a dark background", () => {
+		assert.equal(lookFor(richTheme())?.mode, "truecolor");
+		assert.equal(lookFor(richTheme())?.tints, true);
+	});
+
+	it("uses 256 colours without background tints when the terminal lacks truecolor", () => {
+		assert.equal(look256.mode, "256color");
+		assert.equal(look256.tints, false);
+	});
+
+	it("falls back to the plain dock when the theme has no colour mode", () => {
+		assert.equal(lookFor(plainTheme as ThemeColors), undefined);
+	});
+
+	it("falls back to the plain dock on light themes and light terminals, where the palette is unreadable", () => {
+		assert.equal(lookFor(richTheme("truecolor", "light")), undefined);
+		assert.equal(lookFor(richTheme(), [250, 250, 250]), undefined);
+		assert.notEqual(lookFor(richTheme("truecolor", "light"), [20, 20, 30]), undefined);
+	});
+
+	it("takes text tones from the theme and blends into the reported terminal background", () => {
+		const own = lookFor(richTheme(), [30, 30, 46])!;
+		assert.deepEqual(own.text, [230, 232, 235]);
+		assert.deepEqual(own.background, [30, 30, 46]);
+	});
+});
+
+describe("colour dock", () => {
+	const all = [ci, devServer, probation, failing];
+
+	it("keeps the content of the plain dock", () => {
+		const lines = plain(renderRichDock(all, options(), look, plainTheme));
+		assert.equal(lines.length, 6);
+		assert.match(lines[0]!, /^╭─ ◉ monitors ─+ 4 running · 1 failed · saved ~6\.2k tok ─╮$/);
+		assert.match(
+			lines[1]!,
+			/^│ ⠋ e2e #17 +●━━✗┄┄○ {2}checkout ✗ Run cart\.spec\.ts +pi is on it ↳ {2}\S+ +~2m {3}2m11s │$/,
+		);
+		assert.match(lines[2]!, /^│ ⠋ dev server {2}[⠀-⣿]{18} {2}last: GET \/api\/users 200 in 12ms · 1s ago +10m00s │$/);
+		assert.match(lines[3]!, /^│ ⠋ CI #42 {6}●━━●━━◐┄┄○ {2}test ▸ Run unit tests +\S+ +~1m {3}4m44s │$/);
+		assert.match(lines[4]!, /^│ ⏳ yarn dev +[⠀-⣿ ]{18} {2}last: ready in 420 ms · 1s ago +background in {2}9s │$/);
+		assert.match(lines[5]!, /^╰─+ ctrl\+shift\+m details ─╯$/);
+	});
+
+	it("lines up names so tracks and heartbeats start in the same column", () => {
+		const lines = plain(renderRichDock([ci, devServer], options(), look, plainTheme));
+		const trackAt = lines[2]!.indexOf("●");
+		const traceAt = lines[1]!.search(/[⠁-⣿]{4}/);
+		assert.equal(trackAt, traceAt);
+	});
+
+	it("keeps every line exactly as wide as the terminal at every width, time and colour mode", () => {
+		const more = [1, 2].map((n) => item({ id: `run${n}`, kind: "command", status: "running" }));
+		const sets = [all, [...all, ...more], [green(200), devServer], [green(650), probation], [green(5_000)]];
+		for (const [name, l] of [
+			["truecolor", look],
+			["256", look256],
+		] as const)
+			for (const reducedMotion of [false, true])
+				for (const items of sets)
+					for (const width of [200, 130, 112, 104, 92, 88, 80, 60, 56, 50, 40, 30, 24])
+						for (const at of [0, 333, 1_250, 2_900])
+							for (const line of renderRichDock(items, options({ width, now: NOW + at, reducedMotion }), l, plainTheme))
+								assert.equal(visibleWidth(line), width, `${name} width ${width} +${at}ms: ${line}`);
+	});
+
+	it("uses compact rows at narrow width", () => {
+		const lines = plain(renderRichDock([ci, probation], options({ width: 50 }), look, plainTheme));
+		assert.match(lines[1]!, /^│ ⠋ CI #42 2\/4 4m +│$/);
+		assert.match(lines[2]!, /^│ ⏳ yarn dev bg in 9s +│$/);
+	});
+
+	it("folds more than four rows into +N more", () => {
+		const more = [1, 2].map((n) => item({ id: `run${n}`, kind: "command", status: "running" }));
+		const lines = plain(renderRichDock([...all, ...more], options(), look, plainTheme));
+		assert.equal(lines.length, 6);
+		assert.match(lines[4]!, /\+3 more · \/monitors/);
+	});
+
+	it("uses one line when the terminal is too narrow for a card", () => {
+		assert.equal(renderRichDock(all, options({ width: 23 }), look, plainTheme).length, 1);
+	});
+
+	it("hides entirely when nothing is visible", () => {
+		assert.deepEqual(renderRichDock([green(11_000)], options(), look, plainTheme), []);
+	});
+
+	it("links the run name to GitHub", () => {
+		const lines = renderRichDock([ci], options(), look, plainTheme);
+		assert.ok(lines[1]!.includes("\x1b]8;;https://github.com/acme/app/actions/runs/1\x1b\\"));
+	});
+
+	it("sweeps a highlight along the top border and shimmers the title over time", () => {
+		const top = (at: number) => renderRichDock([ci], options({ now: at }), look, plainTheme)[0];
+		const start = Math.ceil(NOW / 6_000) * 6_000;
+		assert.notEqual(top(start + 600), top(start + 900));
+	});
+});
+
+describe("colour dock moments", () => {
+	const hasBackground = (line: string) => line.includes("\x1b[48;2;");
+
+	it("breathes a red glow behind a failing run", () => {
+		// Medium width has no ETA track, so any background colour is the glow.
+		const lines = renderRichDock([failing], options({ width: 80 }), look, plainTheme);
+		assert.ok(hasBackground(lines[1]!));
+		const amount = (at: number) => richRow(failing, 76, look, at).glow!.amount;
+		assert.notEqual(amount(NOW), amount(NOW + 800));
+	});
+
+	it("flashes a teal glow when a run goes green and lets it fade", () => {
+		assert.ok(hasBackground(renderRichDock([green(200)], options({ width: 80 }), look, plainTheme)[1]!));
+		assert.ok(!hasBackground(renderRichDock([green(5_000)], options({ width: 80 }), look, plainTheme)[1]!));
+	});
+
+	it("shows the green run first, then dissolves it into the one-line summary", () => {
+		const row = (ago: number) => text(richRow(green(ago), 126, look, NOW).cells);
+		assert.match(row(100), /^✓ CI #41 +●━━●━━●━━● {2}all 4 jobs passed .*done {3}6m40s$/);
+		assert.equal(row(HOLD_MS + MORPH_MS + 10), "✓ CI #41 green in 6m02s");
+		const mid = row(HOLD_MS + MORPH_MS / 2);
+		assert.notEqual(mid, row(100));
+		assert.notEqual(mid, row(HOLD_MS + MORPH_MS + 10));
+	});
+
+	it("shows the summary bold in the result colour, then settles to muted", () => {
+		const summaryCell = (ago: number) => richRow(green(ago), 126, look, NOW).cells[2]!;
+		const flash = summaryCell(HOLD_MS + MORPH_MS + 10);
+		assert.deepEqual(flash.fg, PALETTE.teal);
+		assert.equal(flash.bold, true);
+		const settled = summaryCell(SETTLE_AT_MS + SETTLE_MS + 10);
+		assert.deepEqual(settled.fg, look.muted);
+		assert.equal(settled.bold, false);
+	});
+
+	it("fades new rows in and finished rows out", () => {
+		assert.ok(richRow({ ...ci, startedAt: NOW - FADE_IN_MS / 4 }, 126, look, NOW).alpha < 0.5);
+		assert.equal(richRow(ci, 126, look, NOW).alpha, 1);
+		assert.ok(richRow(green(9_900), 126, look, NOW).alpha < 0.2);
+	});
+
+	it("counts down the probation row in gold", () => {
+		const row = richRow(probation, 126, look, NOW).cells;
+		assert.match(text(row), /background in {2}9s$/);
+		assert.deepEqual(row.at(-1)!.fg, PALETTE.gold);
+	});
+
+	it("brightens the last line for a moment when it arrives", () => {
+		const fresh = { ...devServer, lastLineAt: NOW - 50 };
+		const at = (it: DockItem) => richRow(it, 126, look, NOW).cells.find((c) => c.ch === "G")!.fg;
+		assert.ok(at(fresh)[0] > at(devServer)[0]);
+	});
+});
+
+describe("colour dock with reducedMotion", () => {
+	const calm = (partial: Partial<DockOptions> = {}) => options({ reducedMotion: true, ...partial });
+
+	it("shows no spinner, no glow and no flash", () => {
+		const lines = renderRichDock([failing, green(200)], calm({ width: 80 }), look, plainTheme);
+		const out = plain(lines).join("\n");
+		assert.doesNotMatch(out, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+		assert.match(out, /◉ e2e #17/);
+		assert.ok(!lines.some((l) => l.includes("\x1b[48;2;")));
+		assert.match(out, /✓ CI #41 green in 6m02s/);
+	});
+
+	it("keeps border, title and shimmer colours still over time", () => {
+		const frame = (at: number) => renderRichDock([ci, devServer, failing], calm({ now: at }), look, plainTheme);
+		const [a, b] = [frame(NOW + 600), frame(NOW + 4_100)];
+		assert.equal(a[0], b[0]);
+		assert.equal(a.at(-1), b.at(-1));
+		const handling = (at: number) => {
+			const row = richRow(failing, 126, look, at, true).cells;
+			const start = cellText(row).indexOf("pi is on it");
+			return row.slice(start, start + 11).map((c) => pack(c.fg));
+		};
+		assert.deepEqual(handling(NOW + 600), handling(NOW + 4_100));
+	});
+
+	it("still ticks the clocks once a second", () => {
+		const row = (at: number) => plain(renderRichDock([ci], calm({ now: at }), look, plainTheme))[1];
+		assert.notEqual(row(NOW), row(NOW + 1_000));
+	});
+});
+
+describe("colour dock without truecolor", () => {
+	it("draws in 256 colours and never paints a background glow", () => {
+		const lines = renderRichDock([failing, green(200)], options({ width: 80 }), look256, plainTheme);
+		const out = lines.join("\n");
+		assert.match(visible(out), /ESC\[38;5;\d+m/);
+		assert.doesNotMatch(out, /;2;\d+;\d+;\d+m/);
+		assert.ok(!out.includes("\x1b[48;"));
+	});
+});
