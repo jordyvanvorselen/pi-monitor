@@ -17,7 +17,7 @@ import {
 	SETTLE_MS,
 	type ThemeColors,
 } from "../src/ui/dock-rich.ts";
-import { ECG_DOT_MS, ecgCells, ecgText, etaCells, trackCells } from "../src/ui/effects.ts";
+import { ECG_STEP_MS, ecgCells, ecgText, etaCells, trackCells } from "../src/ui/effects.ts";
 import { MIN_CONTRAST, ROLE_TOKENS } from "../src/ui/look.ts";
 import { piTheme } from "../scripts/pi-theme.ts";
 import { plainTheme } from "./helpers.ts";
@@ -193,6 +193,29 @@ describe("cells", () => {
 		assert.deepEqual(faded!.fg, [100, 100, 100]);
 	});
 
+	it("turns fully faded cells into plain spaces without background, so nothing lingers as a ghost", () => {
+		const line = cells("ago ⏳", PALETTE.text, { bg: [60, 20, 30] });
+		const gone = flatten(line, 0, [0, 0, 0]);
+		assert.equal(cellText(gone), "      ");
+		assert.ok(gone.every((c) => c.bg === undefined));
+		assert.equal(encode(gone, "truecolor"), "      \x1b[0m");
+	});
+
+	it("drops cells a dissolve has fully faded out, and fades backgrounds with the text", () => {
+		const a = cells("old", PALETTE.text, { bg: [60, 20, 30] });
+		const b = cells("new", PALETTE.text);
+		const middle = flatten(
+			a.map((c) => ({ ...c, fade: 0 })),
+			1,
+			[0, 0, 0],
+		);
+		assert.equal(cellText(middle), "   ");
+		assert.ok(middle.every((c) => c.bg === undefined));
+		const half = flatten(a, 0.5, [0, 0, 0]);
+		assert.deepEqual(half[0]!.bg, [30, 10, 15]);
+		assert.equal(cellText(flatten(morph(a, b, 1), 1, [0, 0, 0])), "new");
+	});
+
 	it("encodes 24-bit colour, emits only changes and ends with a reset", () => {
 		const line = [...cells("ab", [1, 2, 3]), ...cells("c", [1, 2, 3], { bold: true })];
 		assert.equal(encode(line, "truecolor"), "\x1b[38;2;1;2;3mab\x1b[1mc\x1b[0m");
@@ -212,35 +235,42 @@ describe("cells", () => {
 });
 
 describe("heartbeat", () => {
-	const col = (n: number) => n * ECG_DOT_MS;
+	const step = (n: number) => n * ECG_STEP_MS;
 
-	it("draws a flat baseline without lines", () => {
-		assert.equal(ecgText([], col(1007), 3), "⠤⠤⠤");
+	it("draws a solid baseline without lines", () => {
+		assert.equal(ecgText([], step(1007), 3), "▁▁▁");
 	});
 
-	it("draws a full QRS beat for a line", () => {
-		assert.equal(ecgText([{ at: col(1000), amp: 1 }], col(1007), 5), "⠤⡰⠱⡠⠒");
+	it("draws a full-height spike and a low bump for a line", () => {
+		assert.equal(ecgText([{ at: step(1000), amp: 1 }], step(1007), 9), "▁╱╲▁▂▂▁▁▁");
 	});
 
-	it("scrolls left one dot column every 125 ms", () => {
-		assert.equal(ecgText([{ at: col(1000), amp: 1 }], col(1009), 5), "⡰⠱⡠⠒⠤");
+	it("scrolls left one cell every 250 ms", () => {
+		assert.equal(ecgText([{ at: step(1000), amp: 1 }], step(1008), 9), "╱╲▁▂▂▁▁▁▁");
 	});
 
-	it("draws a smaller blip that never reaches the top row for lines in a burst", () => {
-		const blip = ecgText([{ at: col(1000), amp: 0.55 }], col(1007), 5);
-		assert.notEqual(blip, "⠤⡰⠱⡠⠒");
-		for (const ch of blip) assert.equal((ch.charCodeAt(0) - 0x2800) & 0x09, 0, `${ch} lights the top row`);
+	it("draws a smaller blip without the tall spike for lines in a burst", () => {
+		assert.equal(ecgText([{ at: step(1000), amp: 0.55 }], step(1004), 5), "▂▃▂▁▁");
+	});
+
+	it("keeps the taller part where beats overlap", () => {
+		const beats = [
+			{ at: step(1000), amp: 0.55 },
+			{ at: step(1001), amp: 1 },
+		];
+		assert.equal(ecgText(beats, step(1003), 4), "▂╱╲▁");
 	});
 
 	it("stays blank before the monitor started", () => {
-		assert.equal(ecgText([], col(1007), 5, col(1004)), "   ⠤⠤");
+		assert.equal(ecgText([], step(1007), 5, step(1004)), " ▁▁▁▁");
 	});
 
-	it("is bright at the head and fades into the background at the tail", () => {
-		const trace = ecgCells([], col(1007), 6, look, still);
+	it("is bright at the head and keeps the tail visible", () => {
+		const trace = ecgCells([], step(1007), 6, look, still);
 		const brightness = (c: Cell) => c.fg[0] + c.fg[1] + c.fg[2];
 		assert.ok(brightness(trace[5]!) > brightness(trace[2]!));
 		assert.ok(brightness(trace[2]!) > brightness(trace[0]!));
+		assert.ok(contrast(trace[0]!.fg, look.background) >= 1.8, "tail still visible");
 		assert.equal(trace[5]!.bold, true);
 	});
 
@@ -332,16 +362,16 @@ describe("colour dock", () => {
 			lines[1]!,
 			/^│ ⠋ e2e #17 +●━━✗┄┄○ {2}checkout ✗ Run cart\.spec\.ts +pi is on it ↳ {2}\S+ +~2m {3}2m11s │$/,
 		);
-		assert.match(lines[2]!, /^│ ⠋ dev server {2}[⠀-⣿]{18} {2}last: GET \/api\/users 200 in 12ms · 1s ago +10m00s │$/);
+		assert.match(lines[2]!, /^│ ⠋ dev server {2}[▁▂▃╱╲]{18} {2}last: GET \/api\/users 200 in 12ms · 1s ago +10m00s │$/);
 		assert.match(lines[3]!, /^│ ⠋ CI #42 {6}●━━●━━◐┄┄○ {2}test ▸ Run unit tests +\S+ +~1m {3}4m44s │$/);
-		assert.match(lines[4]!, /^│ ⏳ yarn dev +[⠀-⣿ ]{18} {2}last: ready in 420 ms · 1s ago +background in {2}9s │$/);
+		assert.match(lines[4]!, /^│ ⏳ yarn dev +[▁▂▃╱╲ ]{18} {2}last: ready in 420 ms · 1s ago +background in {2}9s │$/);
 		assert.match(lines[5]!, /^╰─+ ctrl\+shift\+m details ─╯$/);
 	});
 
 	it("lines up names so tracks and heartbeats start in the same column", () => {
 		const lines = plain(renderRichDock([ci, devServer], options(), look, plainTheme));
 		const trackAt = lines[2]!.indexOf("●");
-		const traceAt = lines[1]!.search(/[⠁-⣿]{4}/);
+		const traceAt = lines[1]!.search(/[▁▂▃╱╲]{4}/);
 		assert.equal(trackAt, traceAt);
 	});
 
@@ -428,6 +458,13 @@ describe("colour dock moments", () => {
 		const settled = summaryCell(SETTLE_AT_MS + SETTLE_MS + 10);
 		assert.deepEqual(settled.fg, look.muted);
 		assert.equal(settled.bold, false);
+	});
+
+	it("draws a row that is still invisible as plain spaces without background", () => {
+		const lines = renderRichDock([{ ...failing, startedAt: NOW }], options({ width: 80 }), look, plainTheme);
+		const row = lines[1]!;
+		assert.match(stripTerminalSequences(row), /^│ {78}│$/);
+		assert.ok(!row.includes("\x1b[48;"));
 	});
 
 	it("fades new rows in and finished rows out", () => {

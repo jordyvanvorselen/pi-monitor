@@ -1,11 +1,11 @@
 // The animated pieces of dock v2. Pure functions of data and time, so a frame can be tested.
 import { formatShortDuration } from "../format.ts";
-import { BEAT_MERGE_MS, type Beat } from "../registry.ts";
+import type { Beat } from "../registry.ts";
 import type { Job } from "../sources/types.ts";
 import { type Cell, cells, gradient, spaces } from "./cells.ts";
 import { clamp, mix, type Rgb } from "./color.ts";
 import { SPINNER } from "./glyphs.ts";
-import { type Look, VIDEO_LOOK } from "./look.ts";
+import type { Look } from "./look.ts";
 
 export type { Look } from "./look.ts";
 
@@ -27,22 +27,22 @@ export function spinnerGlyph(clock: Clock): string {
 	return clock.motion ? SPINNER[Math.floor(clock.now / SPINNER_MS) % SPINNER.length]! : "◉";
 }
 
-/* ───────────── heartbeat (braille ECG) ───────────── */
+/* ───────────── heartbeat (ECG) ───────────── */
 
-/** The trace scrolls one braille dot column per this many ms (8 per second), one beat merge window. */
-export const ECG_DOT_MS = BEAT_MERGE_MS;
+/** The trace scrolls one cell per this many ms (4 cells a second). */
+export const ECG_STEP_MS = 250;
 
 /**
- * QRS complex drawn on the 2×4 braille dot grid (rows 0-3, baseline on row 2), one entry per dot column:
- * Q dip, sharp R spike, S dip, then a low T bump.
+ * One beat, one cell per step: a sharp spike drawn with diagonals from the baseline to the top of the cell
+ * and back, then a low T bump. The baseline is the lower one-eighth block, so it reads as one solid line.
+ * Terminals draw these box and block characters themselves, edge to edge.
  */
-const BEAT_SHAPE = [[3], [1, 2], [0], [1, 2], [3], [2], [1], [1]];
-const BLIP_SHAPE = [[3], [1, 2], [1], [2], [2], [2], [1], [2]];
-/** Braille dot bits by [column in cell][row]. */
-const DOT = [
-	[0x01, 0x02, 0x04, 0x40],
-	[0x08, 0x10, 0x20, 0x80],
-];
+export const ECG_BASELINE = "▁";
+const BEAT_SHAPE = ["╱", "╲", "▁", "▂", "▂", "▁"];
+/** A smaller blip for lines that arrive in a burst. */
+const BLIP_SHAPE = ["▂", "▃", "▂"];
+/** Which character wins where beats overlap: the taller one. */
+const HEIGHT: Record<string, number> = { "▁": 1, "▂": 2, "▃": 3, "╱": 8, "╲": 8 };
 
 function lowerBound(beats: readonly Beat[], at: number): number {
 	let lo = 0;
@@ -62,48 +62,33 @@ export function lastBeat(beats: readonly Beat[] | undefined, now: number): Beat 
 	return i >= 0 ? beats[i] : undefined;
 }
 
-/** Dot rows lit in each dot column of the window that ends at `now`. `undefined` = before `start`. */
-export function ecgColumns(
-	beats: readonly Beat[],
-	now: number,
-	dotColumns: number,
-	start = -Infinity,
-): ({ rows: number[]; peak: number } | undefined)[] {
-	const head = Math.floor(now / ECG_DOT_MS);
-	const out: ({ rows: number[]; peak: number } | undefined)[] = [];
-	for (let x = 0; x < dotColumns; x++) {
-		const j = head - (dotColumns - 1 - x);
-		if ((j + 1) * ECG_DOT_MS <= start) {
-			out.push(undefined);
+/** Characters of the trace, without colour, newest on the right. Blank where the monitor had not started yet. */
+export function ecgText(beats: readonly Beat[], now: number, width: number, start = -Infinity): string {
+	const head = Math.floor(now / ECG_STEP_MS);
+	let out = "";
+	for (let x = 0; x < width; x++) {
+		const j = head - (width - 1 - x);
+		if ((j + 1) * ECG_STEP_MS <= start) {
+			out += " ";
 			continue;
 		}
-		const rows = new Set<number>();
-		let peak = 0;
-		for (let i = lowerBound(beats, (j - BEAT_SHAPE.length) * ECG_DOT_MS); i < beats.length; i++) {
+		let ch = ECG_BASELINE;
+		for (let i = lowerBound(beats, (j - BEAT_SHAPE.length) * ECG_STEP_MS); i < beats.length; i++) {
 			const beat = beats[i]!;
-			if (beat.at >= (j + 1) * ECG_DOT_MS) break;
-			const offset = j - Math.floor(beat.at / ECG_DOT_MS);
-			if (offset < 0 || offset >= BEAT_SHAPE.length) continue;
-			const big = beat.amp >= 0.7;
-			for (const r of (big ? BEAT_SHAPE : BLIP_SHAPE)[offset]!) rows.add(r);
-			if (offset >= 1 && offset <= 3) peak = Math.max(peak, big ? 1 : 0.5);
+			if (beat.at >= (j + 1) * ECG_STEP_MS) break;
+			const shape = beat.amp >= 0.7 ? BEAT_SHAPE : BLIP_SHAPE;
+			const part = shape[j - Math.floor(beat.at / ECG_STEP_MS)];
+			if (part && HEIGHT[part]! > HEIGHT[ch]!) ch = part;
 		}
-		if (rows.size === 0) rows.add(2);
-		out.push({ rows: [...rows], peak });
+		out += ch;
 	}
 	return out;
 }
 
-/** Braille characters of the trace, without colour. Blank where the monitor had not started yet. */
-export function ecgText(beats: readonly Beat[], now: number, width: number, start?: number): string {
-	return ecgCells(beats, now, width, VIDEO_LOOK, { now, motion: false }, start)
-		.map((c) => c.ch)
-		.join("");
-}
-
 /**
- * Heartbeat strip: flat baseline, a QRS blip per arriving line, newest on the right. The head is
- * bright teal with a hot white tip when a line just arrived, the tail fades through indigo into the background.
+ * Heartbeat strip: solid baseline, a spike per arriving line, newest on the right. The head is bright with a
+ * hot tip when a line just arrived. The tail runs from the success colour into the link colour and only fades
+ * near its end, so a few beats stay readable.
  */
 export function ecgCells(
 	beats: readonly Beat[],
@@ -113,38 +98,21 @@ export function ecgCells(
 	clock: Clock,
 	start?: number,
 ): Cell[] {
-	const columns = ecgColumns(beats, now, width * 2, start);
+	const chars = [...ecgText(beats, now, width, start)];
 	const recent = lastBeat(beats, now);
 	const hot = clock.motion && recent ? clamp(1 - (now - recent.at) / 450) : 0;
-	// Pale on white reads weaker than dim on black, so the tail stays a little stronger on light backgrounds.
-	const ghost = look.light ? 0.3 : 0.14;
-	const out: Cell[] = [];
-	for (let c = 0; c < width; c++) {
-		let bits = 0;
-		let peak = 0;
-		let any = false;
-		for (let d = 0; d < 2; d++) {
-			const col = columns[c * 2 + d];
-			if (!col) continue;
-			any = true;
-			peak = Math.max(peak, col.peak);
-			for (const r of col.rows) bits |= DOT[d]![r]!;
-		}
-		if (!any) {
-			out.push({ ch: " ", fg: look.dim });
-			continue;
-		}
+	return chars.map((ch, c) => {
+		if (ch === " ") return { ch, fg: look.dim };
 		const k = (c + 1) / width; // 0 = tail, 1 = head
-		const intensity = ghost + (1 - ghost) * k ** 1.7;
+		const intensity = 0.35 + 0.65 * k ** 0.8;
 		let hue = mix(look.link, look.success, k ** 0.6);
-		hue = mix(hue, look.highlight, Math.min(0.4, peak * 0.28) * k);
+		if (HEIGHT[ch]! >= 4) hue = mix(hue, look.highlight, 0.25 * k);
 		let fg = mix(look.background, hue, intensity);
 		const isHead = c === width - 1;
-		if (isHead) fg = mix(fg, look.highlight, 0.35 + hot * 0.4);
+		if (isHead) fg = mix(fg, look.highlight, 0.2 + hot * 0.25);
 		const bg = isHead && hot > 0 && look.tints ? mix(look.background, look.success, 0.28 * hot) : undefined;
-		out.push({ ch: String.fromCharCode(0x2800 + bits), fg, bold: isHead, ...(bg ? { bg } : {}) });
-	}
-	return out;
+		return { ch, fg, bold: isHead, ...(bg ? { bg } : {}) };
+	});
 }
 
 /* ───────────── job track ───────────── */

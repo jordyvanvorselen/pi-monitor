@@ -197,7 +197,7 @@ A rounded card, shown only while there is something to show:
 ```
 ╭─ ◉ monitors ──────────────────────────────────────────── 3 running · 1 failed · saved ~6.2k tok ─╮
 │ ⠸ e2e #17     ●━━✗┄┄○  checkout ✗ Run cart.spec.ts             pi is on it ↳  ██▌    ~2m   2m10s │
-│ ⠸ dev server  ⠤⠤⢄⠎⢆⠔⠤⡰⠱⡠⠒⠤  last: GET /api/users 200 in 12ms · 1s ago                     10m00s │
+│ ⠸ dev server  ▁▁╱╲▁▂▂▁▁▁╱╲  last: GET /api/users 200 in 12ms · 1s ago                     10m00s │
 │ ⠸ CI #42      ●━━●━━◐┄┄○  test ▸ Run unit tests                               ████▋  ~1m   4m43s │
 ╰─────────────────────────────────────────────────────────────────────────── ctrl+shift+m details ─╯
 ```
@@ -205,7 +205,7 @@ A rounded card, shown only while there is something to show:
 - Title "monitors" in the top border, summary on the right: running, failed and the token savings meter.
 - Each row starts with a spinner (red when a job already failed, `‖` when paused) and the name. For GitHub sources the name is an OSC 8 link to the run or PR.
 - `gh_run`/`gh_pr` rows: job track (`●` done, `◐` running, `○` queued, `✗` failed, `◌` skipped; solid links after finished jobs), current job `▸` step, ETA bar from the median of the last ten green runs, elapsed time. Long tracks shrink, very long ones become `12/30`.
-- `command`, `file`, `url`, `pid` rows: heartbeat (braille ECG, one QRS blip per arriving line, scrolling 8 dot columns per second, bright head and fading tail), then `last: <line> · 12s ago`. The age dims after a minute and turns into a warning `quiet 5m` after five minutes.
+- `command`, `file`, `url`, `pid` rows: heartbeat (ECG: solid `▁` baseline, a full-height `╱╲` spike and a low `▂▂` bump per arriving line, a smaller `▂▃▂` blip for lines in a burst, scrolling 4 cells a second, bright head and a tail that fades only near its end). Box and block characters, because terminals draw them edge to edge, where braille dots read as noise, then `last: <line> · 12s ago`. The age dims after a minute and turns into a warning `quiet 5m` after five minutes.
 - `pi is on it ↳` while the model handles a message from that monitor: from the message (or the turn it triggers) until `agent_settled`.
 - Failures first, then running monitors (oldest first), then finished ones. More than four rows: the three most important plus `+2 more · /monitors`.
 
@@ -249,7 +249,7 @@ Colour roles come from the theme (`look.ts`, `ROLE_TOKENS`). The launch video pa
 
 ### Probation rows
 
-A bash command the safety net runs shows at once as `⏳ yarn dev  ⠤⡰⠱⡠⠒  last: … · 2s ago   background in 9s`, with a countdown instead of the clock. It counts as running in the summary. If it ends in time, bash gets its result and the row disappears quietly: no flash, no finished row, no title, no notification, no savings. If it moves to the background, it becomes a normal running row.
+A bash command the safety net runs shows at once as `⏳ yarn dev  ▁╱╲▁▂▂  last: … · 2s ago   background in 9s`, with a countdown instead of the clock. It counts as running in the summary. If it ends in time, bash gets its result and the row disappears quietly: no flash, no finished row, no title, no notification, no savings. If it moves to the background, it becomes a normal running row.
 
 ### `/monitors` overlay
 
@@ -362,7 +362,7 @@ src/
     renderer.ts     transcript messages
     bash-renderer.ts "→ monitor m3" under intercepted bash results
 scripts/
-  record-dock.ts    renders the real dock for docs/dock.gif (asciicast → agg)
+  record-dock.ts    renders the real dock for docs/dock.gif (agg per frame, ffmpeg joins)
   dock-story.ts     the scripted fake monitors of that recording
   pi-theme.ts       Pi's built-in themes, for tests and the recording
 tests/

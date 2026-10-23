@@ -1,5 +1,11 @@
 # pi-monitor
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jordyvanvorselen/pi-monitor/main/docs/dock.gif" alt="The pi-monitor dock: CI #42 runs its jobs while a dev server shows a heartbeat line and yarn dev counts down to the background. The test job fails with a red glow and &quot;pi is on it&quot;, is re-run, and the run goes green, flashes and collapses to &quot;CI #42 green in 6m02s&quot;." width="100%">
+</p>
+
+<p align="center"><b>CI runs, dev servers and logs, watched in the background. Pi wakes only when something happens.</b></p>
+
 Watch long-running things in the background from [pi](https://github.com/earendil-works/pi-coding-agent): GitHub Actions runs, pull request checks, dev servers, builds, log files, URLs and processes. Pi keeps working or goes idle, and wakes up only when something worth knowing happens.
 
 Without this extension a model waits with `sleep 60 && gh run view …` loops or a blocking `gh run watch`. That blocks the session and burns tokens on every poll. With pi-monitor those waits move to the background: the model starts a monitor, or just runs the command and pi-monitor moves it. Either way it gets an answer in milliseconds and moves on. Progress goes to the screen, not to the model. The model hears about the end, and about failures right away.
@@ -31,9 +37,7 @@ monitor({ description: "CI for PR #42", gh_run: "latest" })
 → Started m1 "CI for PR #42" (gh run latest). You will be notified when it ends. Continue with other work.
 ```
 
-A dock appears above the editor:
-
-![The pi-monitor dock: CI #42 runs its jobs while a dev server shows a heartbeat line and yarn dev counts down to the background. The test job fails with a red glow and "pi is on it", is re-run, and the run goes green, flashes and collapses to "CI #42 green in 6m02s".](https://raw.githubusercontent.com/jordyvanvorselen/pi-monitor/main/docs/dock.gif)
+A dock appears above the editor, as in the animation at the top.
 
 <details>
 <summary>The dock as text</summary>
@@ -41,7 +45,7 @@ A dock appears above the editor:
 ```
 ╭─ ◉ monitors ──────────────────────────────────────────── 3 running · 1 failed · saved ~6.2k tok ─╮
 │ ⠸ e2e #17     ●━━✗┄┄○  checkout ✗ Run cart.spec.ts             pi is on it ↳  ██▌    ~2m   2m10s │
-│ ⠸ dev server  ⠤⠤⢄⠎⢆⠔⠤⡰⠱⡠⠒⠤  last: GET /api/users 200 in 12ms · 1s ago                     10m00s │
+│ ⠸ dev server  ▁▁╱╲▁▂▂▁▁▁╱╲  last: GET /api/users 200 in 12ms · 1s ago                     10m00s │
 │ ⠸ CI #42      ●━━●━━◐┄┄○  test ▸ Run unit tests                               ████▋  ~1m   4m43s │
 ╰─────────────────────────────────────────────────────────────────────────── ctrl+shift+m details ─╯
 ```
@@ -113,7 +117,7 @@ Messages are short. Lines that arrive within half a second are batched, at most 
 - **Any terminal.** Dark and light themes both work. On a light background bright tips turn dark instead of white and glows are softer. Terminals without 24-bit colour get the closest of 256 colours and no glow. The dock only animates while something runs or a finished row is still on screen. With `reducedMotion` the colours stay but nothing moves.
 - **Savings meter.** The dock estimates the tokens saved compared to a polling loop: one poll per 30 seconds at about 200 tokens, minus what pi-monitor actually delivered. It ignores the cost of re-reading the context on every poll, so the real saving is higher.
 - **Always the full card.** The dock shows whenever monitors exist, also while pi is working, and disappears when there are none. Narrow terminals get compact rows like `⠹ CI #42 3/5 4m`. More than four monitors show the three most important (failures first) and `+2 more`.
-- **Bash commands on probation.** While the safety net waits to see whether a command ends, its row shows at once: `⏳ yarn dev  ⠤⡰⠱⡠⠒  last: … · 2s ago   background in 9s`. If the command ends in time the row disappears quietly. If not, it becomes a normal running row.
+- **Bash commands on probation.** While the safety net waits to see whether a command ends, its row shows at once: `⏳ yarn dev  ▁╱╲▁▂▂  last: … · 2s ago   background in 9s`. If the command ends in time the row disappears quietly. If not, it becomes a normal running row.
 - **`ctrl+shift+m`** opens `/monitors`; press it again or `esc` to close. The key needs a terminal with the kitty keyboard protocol (kitty, Ghostty, WezTerm, recent iTerm2). Set `shortcut` to `"alt+m"` for other terminals.
 
 ### `/monitors`
@@ -197,7 +201,7 @@ npm test
 
 Run `npm run lint:fix` to fix lint and formatting problems. Tests never call the real `gh`: sources get a `run()` function that the tests replace with recorded JSON fixtures.
 
-The dock animation in this README is recorded from the real dock renderer. After changing the dock, run `npm run record:dock` to write a new `docs/dock.gif`. It needs [agg](https://github.com/asciinema/agg) (`brew install agg`). The story of fake monitors is in `scripts/dock-story.ts`. The GIF is not part of the npm package.
+The dock animation in this README is recorded from the real dock renderer. After changing the dock, run `npm run record:dock` to write a new `docs/dock.gif`. It needs [agg](https://github.com/asciinema/agg) and ffmpeg (`brew install agg ffmpeg`). The story of fake monitors is in `scripts/dock-story.ts`. The GIF is not part of the npm package.
 
 ## Versioning and releases
 

@@ -4,7 +4,7 @@
 import { formatDuration, formatShortDuration, formatTokens } from "../format.ts";
 import type { MonitorStatus } from "../registry.ts";
 import { type Cell, cells, encode, fitCells, flatten, morph, padCells, spaces, truncCells } from "./cells.ts";
-import { clamp, mix, type Rgb, smooth } from "./color.ts";
+import { clamp, mix, pack, type Rgb, smooth } from "./color.ts";
 import {
 	borderColor,
 	type Clock,
@@ -347,7 +347,10 @@ function applyGlow(lines: Cell[][], row: number, glow: Glow, background: Rgb): v
 			const amount = glow.amount * fy * (0.3 - (0.17 * x) / w);
 			if (amount <= 0.002) continue;
 			const cell = line[x]!;
-			line[x] = { ...cell, bg: mix(cell.bg ?? background, glow.color, Math.min(1, amount)) };
+			const bg = mix(cell.bg ?? background, glow.color, Math.min(1, amount));
+			// A tint too small to change the colour is no tint: keep the terminal's own background.
+			if (!cell.bg && pack(bg) === pack(background)) continue;
+			line[x] = { ...cell, bg };
 		}
 	}
 }

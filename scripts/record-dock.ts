@@ -1,13 +1,14 @@
 // Record the README animation of the dock: renders the real dock v2 for every frame of the scripted story
-// (scripts/dock-story.ts) with Pi's dark theme, writes an asciicast and turns it into docs/dock.gif with agg.
+// (scripts/dock-story.ts) with Pi's dark theme, turns each frame into an image with agg and joins them into
+// docs/dock.gif with ffmpeg.
 //
-//   brew install agg        (or: cargo install --git https://github.com/asciinema/agg)
+//   brew install agg ffmpeg        (agg also: cargo install --git https://github.com/asciinema/agg)
 //   npm run record:dock
 //
-// Set AGG to use another agg binary. The intermediate cast goes to the OS temp directory.
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+// Set AGG to use another agg binary. Intermediate files go to the OS temp directory.
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderRichDock } from "../src/ui/dock-rich.ts";
@@ -18,7 +19,11 @@ import { piTheme } from "./pi-theme.ts";
 
 const COLS = 112;
 const ROWS = 7;
-const FPS = 15;
+/** 12 frames a second matches the spinner and keeps the GIF around 2 MB. */
+const FPS = Number(process.env.FPS ?? 12);
+const FONT_SIZE = process.env.FONT_SIZE ?? "24";
+/** 128 colours keep glows smooth. 64 shows bands in the red and green glows. */
+const COLORS = process.env.COLORS ?? "128";
 /** Terminal background of the recording: a dark blue-grey that suits Pi's dark theme. */
 const BACKGROUND: Rgb = [16, 18, 24];
 /** Hack and DejaVu draw braille with big dots, close to what terminals like Ghostty and kitty draw themselves. */
@@ -33,7 +38,7 @@ if (!look) throw new Error("Pi's dark theme gave no colour look");
 
 const hex = (c: readonly number[]) => c.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
 const width = COLS - 2;
-const events: [number, "o", string][] = [];
+const frames: string[] = [];
 for (let frame = 0; frame < (LOOP_MS / 1000) * FPS; frame++) {
 	const ms = (frame * 1000) / FPS;
 	const { now, items, savedTokens } = story(ms);
@@ -46,41 +51,69 @@ for (let frame = 0; frame < (LOOP_MS / 1000) * FPS; frame++) {
 	// Bottom-anchored like the real widget above the editor, one blank row below.
 	const screen = [...Array<string>(Math.max(0, ROWS - 1 - dock.length)).fill(""), ...dock, ""];
 	const text = screen.map((line) => `\x1b[2K ${line}`).join("\r\n");
-	events.push([ms / 1000, "o", `${frame === 0 ? "\x1b[?25l" : ""}\x1b[H${text}`]);
+	frames.push(`\x1b[?25l\x1b[H${text}`);
 }
 
 const dir = mkdtempSync(join(tmpdir(), "pi-monitor-dock-"));
-const cast = join(dir, "dock.cast");
-const header = { version: 2, width: COLS, height: ROWS, env: { TERM: "xterm-256color" } };
-writeFileSync(cast, [JSON.stringify(header), ...events.map((e) => JSON.stringify(e))].join("\n") + "\n");
-
 mkdirSync(dirname(output), { recursive: true });
 
 // Custom agg theme: background, foreground, then the 16 ANSI colours (unused, the dock writes 24-bit colour).
-const ansi16 = Array.from({ length: 16 }, () => hex(look.muted));
-const agg = spawnSync(
-	process.env.AGG ?? "agg",
-	[
-		"--theme",
-		[hex(BACKGROUND), hex(look.text), ...ansi16].join(","),
-		"--text-font-family",
-		FONTS,
-		"--font-size",
-		"28",
-		"--line-height",
-		"1.3",
-		"--fps-cap",
+const aggTheme = [hex(BACKGROUND), hex(look.text), ...Array.from({ length: 16 }, () => hex(look.muted))].join(",");
+
+/**
+ * agg renders each frame on its own. Rendering the whole cast in one go lets gifski's temporal denoiser keep
+ * faint traces of old text behind rows that changed. ffmpeg then joins the frames losslessly.
+ */
+async function renderFrame(index: number): Promise<void> {
+	const name = join(dir, `frame-${String(index).padStart(4, "0")}`);
+	const header = { version: 2, width: COLS, height: ROWS, env: { TERM: "xterm-256color" } };
+	writeFileSync(`${name}.cast`, `${JSON.stringify(header)}\n${JSON.stringify([0, "o", frames[index]])}\n`);
+	const args = ["--theme", aggTheme, "--text-font-family", FONTS, "--font-size", FONT_SIZE, "--line-height", "1.25"];
+	await run(process.env.AGG ?? "agg", [...args, "--last-frame-duration", "1", `${name}.cast`, `${name}.gif`]);
+}
+
+function run(command: string, args: string[]): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+		let stderr = "";
+		child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+		child.on("error", (error) => reject(new Error(`${command}: ${error.message}`)));
+		child.on("close", (code) =>
+			code === 0 ? resolve() : reject(new Error(`${command} exited ${code}: ${stderr.split("\r").at(-1)}`)),
+		);
+	});
+}
+
+let next = 0;
+const workers = Array.from({ length: Math.max(1, availableParallelism() - 1) }, async () => {
+	while (next < frames.length) await renderFrame(next++);
+});
+try {
+	await Promise.all(workers);
+	// One palette for the whole loop, no dithering: crisp text and stable colours from frame to frame.
+	const filter = `split[a][b];[a]palettegen=stats_mode=full:max_colors=${COLORS}[p];[b][p]paletteuse=dither=none:diff_mode=rectangle`;
+	await run("ffmpeg", [
+		"-v",
+		"error",
+		"-y",
+		"-f",
+		"image2",
+		"-c:v",
+		"gif",
+		"-framerate",
 		String(FPS),
-		"--last-frame-duration",
-		String(1 / FPS),
-		cast,
+		"-i",
+		join(dir, "frame-%04d.gif"),
+		"-filter_complex",
+		filter,
+		"-loop",
+		"0",
 		output,
-	],
-	{ encoding: "utf8" },
-);
-if (agg.error || agg.status !== 0) {
-	console.error(agg.error?.message ?? agg.stderr.split("\r").at(-1));
-	console.error(`agg failed. The cast is at ${cast}`);
+	]);
+} catch (error) {
+	console.error((error as Error).message);
+	console.error(`The frames are in ${dir}`);
 	process.exit(1);
 }
-console.log(`${output} (${events.length} frames, ${LOOP_MS / 1000} s)`);
+rmSync(dir, { recursive: true, force: true });
+console.log(`${output} (${frames.length} frames, ${LOOP_MS / 1000} s)`);

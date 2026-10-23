@@ -101,14 +101,24 @@ function sanitize(cs: readonly Cell[]): Cell[] {
 	});
 }
 
-/** Fade text into `background` by `alpha` (row fade-in and fade-out) and apply `fade` from a dissolve. */
+/** Below this opacity a cell is gone. */
+export const INVISIBLE = 0.02;
+
+/**
+ * Fade text into `background` by `alpha` (row fade-in and fade-out) and apply `fade` from a dissolve.
+ * Backgrounds fade too. A cell that is gone becomes a plain space without background, so no glyph drawn
+ * in a guessed background colour can linger as a ghost.
+ */
 export function flatten(cs: readonly Cell[], alpha: number, background: Rgb): Cell[] {
-	return sanitize(cs).map((c) => {
+	const faded = sanitize(cs).map((c): Cell => {
 		const a = alpha * (c.fade ?? 1);
-		if (a >= 1) return c;
-		const under = c.bg ?? background;
-		return { ...c, fg: mix(under, c.fg, a), bold: c.bold && a > 0.5, fade: undefined };
+		if (a >= 1) return c.fade === undefined ? c : { ...c, fade: undefined };
+		if (a <= INVISIBLE) return { ch: c.ch === "" ? "" : " ", fg: background };
+		const bg = c.bg ? mix(background, c.bg, a) : undefined;
+		return { ...c, fg: mix(bg ?? background, c.fg, a), bg, bold: c.bold && a > 0.5, fade: undefined };
 	});
+	// A wide grapheme that faded out leaves its continuation cell behind: sanitize turns it into a space.
+	return sanitize(faded);
 }
 
 const ansiCache = new Map<string, string>();

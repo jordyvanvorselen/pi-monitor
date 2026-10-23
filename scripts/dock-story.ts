@@ -142,7 +142,8 @@ function devServer(now: number): DockItem {
 		kind: "command",
 		description: "dev server",
 		status: "running",
-		startedAt: s(-600),
+		// Running for hours: the clock shows `2h14m` for the whole loop, so it does not jump back at the seam.
+		startedAt: s(-(2 * 3600 + 14 * 60 + 5)),
 		progress: {},
 		...upTo(DEV_LINES, now),
 	};
@@ -153,5 +154,6 @@ export function story(ms: number): { now: number; items: DockItem[]; savedTokens
 	const now = T0 + ms;
 	const t = ms / 1000;
 	const items = [ci(t, now), devServer(now), yarn(t, now)].filter((i): i is DockItem => i !== undefined);
-	return { now, items, savedTokens: 6_200 + Math.floor(t * 40) };
+	// A fixed savings meter, so it does not jump back at the seam either.
+	return { now, items, savedTokens: 6_200 };
 }
