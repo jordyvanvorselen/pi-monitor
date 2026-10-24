@@ -150,6 +150,75 @@ Things to know:
 - Only interactive and RPC sessions are intercepted. In print and JSON mode nothing would receive the later message, so bash runs as usual.
 - Set `PI_MONITOR_INTERCEPT=0` to turn the interceptor off. If anything goes wrong inside it, the command runs unchanged and the error goes to `<tmp>/pi-monitor/interceptor.log`.
 
+## Herdr
+
+When pi runs inside [Herdr](https://herdr.dev), pi-monitor can show your monitors in the Herdr sidebar, so you see CI from any tab.
+
+```
+ spaces
+ ● pi-monitor
+   feat/checkout
+   ✗ CI                     ← $ci, red
+ ⋮
+ agents
+ ● pi-monitor
+   pi
+   ✗ CI #42 test failed +1  ← $mon, red
+```
+
+- **Agent row of the pi pane:** the most important monitor. Failures first, then running GitHub runs, then a run that just went green, then other monitors. For example `◐ CI #42 3/5 · 4m`, `✗ CI #42 test failed`, `✓ CI #42 green in 6m02s` (for 10 seconds, like the dock) or `⏳ yarn dev`. `+2` means two more are running.
+- **Space row:** `◐ CI`, `✗ CI` or `✓ CI` while the session watches GitHub runs.
+- **Colours:** gold while running, red for failures, green for success. They come from your Pi theme when you set it up.
+
+The sidebar updates at most once a second and only when the text changes. Clocks show whole minutes, so an idle run does not redraw every second.
+
+### Set it up
+
+Run `/monitors herdr`. It:
+
+1. Sets `"herdr": "on"` in the `"monitor"` section of `~/.pi/agent/settings.json`.
+2. Adds a `$mon` row to the agent rows and a `$ci` row to the space rows in Herdr's config, `~/.config/herdr/config.toml` (or `$HERDR_CONFIG_PATH`). Herdr only shows values the config puts in a row, so this step is needed. Your own rows stay. If you have none, Herdr's default rows are written out with the new row below them. If you have rows for pi under `rows_by_agent`, the row goes there.
+3. Lets Herdr check the new config, saves a backup next to it (`config.toml.pi-monitor-<date>-<time>.bak`) and asks Herdr to reload it. If Herdr does not accept it, the old file comes back.
+
+Running it again changes nothing. pi-monitor never touches other parts of the file. The added part looks like this, with a `# pi-monitor` comment above each `rows`:
+
+```toml
+[ui.sidebar.agents]
+# pi-monitor: monitor rows, added by /monitors herdr. Remove the $mon and $ci rows to undo.
+rows = [
+  ["state_icon", "machine", "workspace", "tab"],
+  ["agent"],
+  [{ token = "$mon", rules = [{ starts_with = "✗", fg = "#FF5F6D" }, { starts_with = "✓", fg = "#3CF2C8" }, { starts_with = "◐", fg = "#FFD66B" }, …] }],
+]
+
+[ui.sidebar.spaces]
+# pi-monitor: monitor rows, added by /monitors herdr. Remove the $mon and $ci rows to undo.
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status"],
+  [{ token = "$ci", rules = [ … ] }],
+]
+```
+
+- `/monitors herdr off` stops sending anything to Herdr, clears the sidebar values and hides the startup note. The rows stay in Herdr's config and show nothing. To remove them, delete the `$mon` and `$ci` rows.
+- `/monitors herdr status` shows whether pi runs in Herdr, the setting and whether the config has the rows.
+- Until you run one of these, pi shows a one-line note at startup inside Herdr: `Herdr detected. Show monitors in the Herdr sidebar: /monitors herdr. Hide this note: /monitors herdr off`.
+
+### Notifications
+
+With the integration on, the notification when a monitor ends goes to Herdr as a toast instead of to the terminal. Herdr does not pass terminal notifications from its panes on, so you get one notification, not two or none. A success plays Herdr's "done" sound, a failure or timeout its "request" sound. Herdr shows no toast for the tab you are looking at. `desktopNotifications: false` turns these off too. If Herdr cannot be reached, the terminal notification goes out instead. If you turned toasts off in Herdr (`[ui.toast] delivery = "off"`), `/monitors herdr` tells you and leaves it off.
+
+### Blocked mark
+
+Set `"herdrAttention": true` to mark the pi pane as blocked in Herdr when a monitor fails or times out and pi does not pick it up within 2 seconds, for example a monitor with `wake: "never"`. The label says `CI #42 failed`. The mark goes away when pi handles the message, a monitor with the same name starts again, you type a message, or the session ends. It needs Herdr's pi integration (`herdr integration install pi`), which listens for these marks.
+
+### Limits
+
+- One line per pane and one per space: no row per monitor, no job track and no progress bar in the sidebar.
+- Herdr cuts long values at the sidebar width. The `+2` count can fall off on a narrow sidebar.
+- Two pi sessions in the same space share the `$ci` value. The last one to report wins.
+- Errors talking to Herdr never reach pi or the dock. They go to `<tmp>/pi-monitor/herdr.log`, and pi-monitor waits longer after each failure (up to a minute) before it tries again.
+
 ## Sessions and logs
 
 Every start and end is stored in the session as a custom entry. These entries never reach the model. After a resume or `/reload`, unfinished `gh_run` and `gh_pr` monitors restart with the same id. Commands, file tails, URL and pid watchers ended with the old session and show as "ended with the session".
@@ -171,7 +240,9 @@ Add a `"monitor"` section to `~/.pi/agent/settings.json` for user-wide settings,
     "classifier": "typesafe/jev-latest",
     "desktopNotifications": true,
     "reducedMotion": false,
-    "shortcut": "ctrl+shift+m"
+    "shortcut": "ctrl+shift+m",
+    "herdr": "on",
+    "herdrAttention": false
   }
 }
 ```
@@ -185,10 +256,12 @@ Add a `"monitor"` section to `~/.pi/agent/settings.json` for user-wide settings,
 | `desktopNotifications`   | `true`           | Send a terminal desktop notification when a monitor ends.                                            |
 | `reducedMotion`          | `false`          | No spinner, shimmer, glow or flash. Clocks still update once a second.                               |
 | `shortcut`               | `"ctrl+shift+m"` | Key that opens and closes `/monitors`. Read at startup.                                              |
+| `herdr`                  | not set          | `"on"` shows monitors in the Herdr sidebar, `"off"` does not. Set by `/monitors herdr [off]`.        |
+| `herdrAttention`         | `false`          | Mark the pi pane as blocked in Herdr when a failure waits for you. See [Herdr](#herdr).              |
 
 ## Modes
 
-The dock, title, notifications and overlay only exist in the interactive terminal UI. In print, JSON and RPC modes the tools still work and messages still reach the model. `/monitors` prints a plain list there.
+The dock, title, notifications, overlay and the Herdr sidebar only exist in the interactive terminal UI. In print, JSON and RPC modes the tools still work and messages still reach the model. `/monitors` prints a plain list there.
 
 ## Development
 

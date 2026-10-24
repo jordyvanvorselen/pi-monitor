@@ -26,7 +26,8 @@ export interface ControllerDeps {
 	settings(): Settings;
 	now(): number;
 	sessionName(): string | undefined;
-	notify(title: string, body: string): void;
+	/** Desktop notification for a monitor that ended. */
+	notify(title: string, body: string, record: MonitorRecord): void;
 }
 
 /**
@@ -123,7 +124,7 @@ export class UiController {
 		if (!this.deps.settings().desktopNotifications) return;
 		if (record.status !== "success" && record.status !== "failure" && record.status !== "timeout") return;
 		const glyph = record.status === "success" ? "✓" : record.status === "failure" ? "✗" : "◔";
-		this.deps.notify("pi · monitor", `${glyph} ${record.description}: ${record.summary ?? record.status}`);
+		this.deps.notify("pi · monitor", `${glyph} ${record.description}: ${record.summary ?? record.status}`, record);
 	}
 
 	private draw(width: number, theme: Paint & ThemeColors): string[] {

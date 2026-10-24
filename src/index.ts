@@ -8,6 +8,7 @@ import { SafetyNet } from "./intercept/safety-net.ts";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { cleanupOldLogs, LOG_ROOT, MonitorLog, sessionLogDir } from "./log.ts";
+import { HERDR_USAGE, HerdrIntegration } from "./herdr/integration.ts";
 import { desktopNotification, openExternal } from "./notify.ts";
 import { Registry, startMonitor, type MonitorEntry } from "./registry.ts";
 import { planResume } from "./resume.ts";
@@ -33,7 +34,12 @@ export interface MonitorOverrides {
 	/** Environment for the interceptor kill switch. */
 	env?: NodeJS.ProcessEnv;
 	/** Hands internals to tests. */
-	expose?: (internals: { registry: Registry; ui: UiController; interceptor: Interceptor }) => void;
+	expose?: (internals: {
+		registry: Registry;
+		ui: UiController;
+		interceptor: Interceptor;
+		herdr: HerdrIntegration;
+	}) => void;
 }
 
 export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOverrides = {}) {
@@ -67,31 +73,52 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		persist: (entry) => {
 			if (!shutDown) pi.appendEntry<MonitorEntry>(ENTRY_TYPE, entry);
 		},
-		onChange: () => ui.changed(),
+		onChange: () => {
+			ui.changed();
+			herdr.changed();
+		},
 		onEnd: (record) => {
 			ui.ended(record);
+			herdr.ended(record);
 			interceptor.monitorEnded(record.id);
 		},
 		clock,
 	});
 
+	const desktop = overrides.notify ?? desktopNotification;
 	const ui = new UiController({
 		registry,
 		settings: () => settings,
 		now: () => clock.now(),
 		sessionName: () => pi.getSessionName(),
-		notify: overrides.notify ?? desktopNotification,
+		notify: (title, body, record) => herdr.notify(record, () => desktop(title, body)),
 	});
 
-	const log = (message: string) => {
+	const logTo = (file: string) => (message: string) => {
 		try {
 			const root = overrides.logRoot ?? LOG_ROOT;
 			mkdirSync(root, { recursive: true });
-			appendFileSync(join(root, "interceptor.log"), `${new Date().toISOString()} ${message}\n`);
+			appendFileSync(join(root, file), `${new Date().toISOString()} ${message}\n`);
 		} catch {
 			// logging is best effort
 		}
 	};
+	const log = logTo("interceptor.log");
+
+	const herdr = new HerdrIntegration({
+		env: overrides.env ?? process.env,
+		...(overrides.home ? { home: overrides.home } : {}),
+		monitors: () => registry.visible(),
+		get: (id) => registry.get(id),
+		settings: () => settings,
+		reloadSettings: () => {
+			settings = loadSettings(ctxRef?.cwd ?? process.cwd(), overrides.home);
+		},
+		clock,
+		log: logTo("herdr.log"),
+		emit: (channel, data) => pi.events.emit(channel, data),
+		cwd: () => ctxRef?.cwd ?? process.cwd(),
+	});
 
 	const safetyNet = new SafetyNet({
 		registry,
@@ -114,7 +141,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		...(overrides.env ? { env: overrides.env } : {}),
 	});
 
-	overrides.expose?.({ registry, ui, interceptor });
+	overrides.expose?.({ registry, ui, interceptor, herdr });
 
 	pi.registerTool({
 		name: "monitor",
@@ -237,9 +264,26 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		);
 	};
 
+	const subcommands = [
+		{ value: "herdr", label: "herdr", description: "Show monitors in the Herdr sidebar" },
+		{ value: "herdr off", label: "herdr off", description: "Stop showing monitors in Herdr" },
+		{ value: "herdr status", label: "herdr status", description: "What the Herdr integration does now" },
+	];
+
 	pi.registerCommand("monitors", {
-		description: "Monitors: timeline, live log, open in browser, stop",
-		handler: async (_args, ctx) => toggleOverlay(ctx),
+		description: "Monitors: timeline, live log, open in browser, stop. /monitors herdr: Herdr sidebar",
+		getArgumentCompletions: (prefix) => {
+			const typed = prefix.trimStart();
+			const items = subcommands.filter((s) => s.value.startsWith(typed));
+			return items.length ? items : null;
+		},
+		handler: async (args, ctx) => {
+			ctxRef = ctx;
+			const [sub, ...rest] = args.trim().split(/\s+/);
+			if (!sub) return toggleOverlay(ctx);
+			if (sub === "herdr") return herdr.command(rest.join(" "), ctx.ui);
+			ctx.ui.notify(`Unknown argument "${sub}". ${HERDR_USAGE}, or /monitors for the overlay.`, "error");
+		},
 	});
 
 	// The overlay also closes on this key itself, in case it keeps the focus.
@@ -248,7 +292,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		handler: (ctx) => toggleOverlay(ctx),
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		ctxRef = ctx;
 		shutDown = false;
 		settings = loadSettings(ctx.cwd, overrides.home);
@@ -256,6 +300,8 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		cleanupOldLogs(overrides.logRoot);
 		interceptor.reset();
 		ui.attach(ctx);
+		herdr.attach(ctx);
+		herdr.startupNote(event, ctx.ui);
 
 		const plan = planResume(ctx.sessionManager.getBranch(), ENTRY_TYPE);
 		for (const id of plan.ids) registry.reserveId(id);
@@ -275,6 +321,11 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		const message = event.message as { role?: string; customType?: string; details?: { id?: unknown } };
 		if (message.role === "custom" && message.customType === CUSTOM_TYPE && typeof message.details?.id === "string")
 			registry.setHandling(message.details.id, true);
+	});
+
+	pi.on("input", async (event) => {
+		// The user typed: they have seen the failure.
+		if (event.source === "interactive") herdr.userInput();
 	});
 
 	pi.on("agent_settled", async () => {
@@ -297,5 +348,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		safetyNet.dispose();
 		interceptor.reset();
 		ui.detach();
+		// Clear our Herdr tokens, but never hold up the shutdown for long. The TTL clears them anyway.
+		await Promise.race([herdr.detach(), new Promise((resolve) => setTimeout(resolve, 500).unref())]);
 	});
 }
