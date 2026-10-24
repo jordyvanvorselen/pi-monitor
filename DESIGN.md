@@ -263,6 +263,23 @@ Monitor messages use `customType: "monitor"` with a renderer. Collapsed: `✗ mo
 
 One timer drives everything. It ticks every 120 ms while a monitor runs (spinner), every 250 ms while finished rows fade out, and stops when nothing is visible and on `session_shutdown`. `reducedMotion` turns off spinner and flash and ticks once a second. During output bursts redraws wait for the next tick instead of following every line.
 
+## Herdr
+
+[Herdr](https://herdr.dev) runs agents in panes and shows them in a sidebar. Inside Herdr, pi-monitor reports monitors to that sidebar (`src/herdr/`).
+
+- **Detection:** `HERDR_ENV=1` plus `HERDR_SOCKET_PATH` and `HERDR_PANE_ID`, TUI mode, and the setting `herdr: "on"`. Print, JSON and RPC modes never talk to Herdr.
+- **Socket:** one JSON line out, one JSON line back, a new Unix socket connection per request, no CLI spawns (`client.ts`). Requests run one after the other. A request that fails resolves to undefined, is logged to `<tmp>/pi-monitor/herdr.log` and makes the client skip requests for 1 s, 2 s, 4 s … up to 60 s. Nothing throws into pi or the dock.
+- **Tokens:** `pane.report_metadata` with `$mon` and the count tokens for the pi pane only (`tokens.ts`, `sidebar.ts`). All of them go in one report per tick, with only the keys that changed. No space token: Herdr keeps one value per key per workspace and the last report wins (checked live with two sources), so two pi sessions in one space would overwrite each other. Agent rows are per pane, so they cannot clash. One fixed source, `pi-monitor`, because Herdr keeps at most 32 sources per pane for its lifetime. No `seq`: requests are serial, and a new pi in the same pane would start below the old sequence and be ignored. The value carries a 60 s TTL, refreshed every 30 s while it shows, so a crashed pi leaves nothing behind. When nothing is left, it is cleared with `null`.
+- **`$mon`:** the most important visible monitor: failures, running GitHub runs, a fresh success (for the dock's 10 s), other running monitors, stopped ones. Text reuses the dock helpers (`displayName`, `finishedText`, `jobCounts`): `◐ CI #42 ▰▰▰▱▱ 3/5 · 4m`. A running GitHub run with `progress.etaMs` (the dock's estimate) gets a 5-cell text bar: `floor(elapsed / eta × 5)` cells, at most 4 until the run ends, so the token changes only when a whole cell fills and the throttle stays quiet. No ETA, other kinds, failure and finish moments: no bar. `▰▱` have a neutral East Asian width (unlike `■□`), and a live check in Herdr's sidebar showed them one column wide with the border in place. The token is at most 80 characters: running rows shorten the name and keep the glyph, bar and job counts; other rows are cut at the end. Each state starts with its own glyph (`◐ ⏳ ‖ ✗ ◔ ✓ ■ ◌`) so config rules can colour it by `starts_with`.
+- **Counts row:** `$mon_fail`, `$mon_run`, `$mon_wait`, `$mon_ok` with values like `✗1`, `◐2`, `⏳1`, `✓1`, the same glyphs as `$mon`. Failure is `hasFailure` (failures, timeouts, running runs with a failed job); waiting is a command on probation or a GitHub run whose jobs all wait for a runner (the dock's "waiting for a runner"); ok is a success still on screen; stopped and ended monitors are not counted. Zero is null, and with fewer than two visible monitors all four are null, so the row only shows when `$mon` cannot say it all. It replaces the earlier ` +N` suffix. Separate tokens so each gets its own fixed `fg` in the config; Herdr joins tokens in a row with `·` and has no setting for that separator (only the tab bar has one). Live at the default 26 columns: `✗1 · ◐2 · ⏳1` fits with room to spare, and `⏳` takes two columns with the border still aligned.
+- **Rate:** every token change makes Herdr resend the sidebar to SSH clients ([herdr#4428](https://github.com/herdrdev/herdr/issues/4428)). So at most one report per second, only on change, no spinner, and clocks in whole minutes. A 1 s timer runs only while something is visible or a value still needs clearing.
+- **Notifications:** with the integration on, `UiController.ended` routes its notification to `notification.show` instead of the OSC escape. Herdr does not forward OSC notifications from panes, and its toasts know which tab you look at, so this gives exactly one notification. Sound `done` for success, `request` for failure and timeout. `desktopNotifications: false` turns it off. When Herdr cannot be reached, the OSC notification goes out instead. A `disabled` reply (toasts off in Herdr) is respected.
+- **Blocked mark** (`attention.ts`, setting `herdrAttention`, off by default): Herdr's pi integration listens for `pi.events` `herdr:blocked` `{ active, label }` and counts them. A failure or timeout that the model does not pick up within 2 s emits `active: true` with `CI #42 failed`. Exactly one `active: false` follows when the model handles that monitor, a monitor with the same name or description starts (a re-run), the user types (`input` event from the interactive editor), the integration turns off or the session ends. The grace time avoids a blocked flash when an idle pi starts on the failure at once. pi-monitor never sends `pane.report_agent` itself.
+- **`/monitors herdr`** (`integration.ts`, `config.ts`): writes `herdr: "on"` to the user settings with Pi's lock convention (a `settings.json.lock` directory) and an atomic rename, then edits Herdr's config. Herdr only renders custom tokens a row names, so the config needs a `$mon` row and a counts row. The edit is text-based to keep comments and layout: parse with `smol-toml`, find the `rows` statement of `[ui.sidebar.agents]` (or `rows_by_agent.pi` when the user has one), and replace only that value with the user's rows (Herdr's defaults when there are none) minus any old `$mon`/`$mon_…` entries, plus ours. That also migrates the one-row layout of earlier builds. Test builds also added a `$ci` row to `[ui.sidebar.spaces]`; setup takes it out again: the user's other space rows stay, a `rows` that only holds Herdr's defaults is removed, and so is the table when nothing else is in it. A missing table is appended. The result is parsed again and must contain exactly what we meant, else nothing is written and the user gets the lines to add by hand. Re-running gives the same text (idempotent). Before writing, `herdr config check` runs on a candidate file next to the config; then a timestamped backup is made, the file is replaced atomically and `server.reload_config` applies it. A reload with diagnostics puts the backup back. Toast delivery is not touched: Herdr shows toasts by default, and an explicit `"off"` is the user's choice, so the command only mentions it.
+- **`off`** stores `herdr: "off"`, clears the tokens and takes back blocked marks. The config rows stay; empty tokens hide their rows, so they cost nothing.
+- **No terminal progress sequence (OSC 9;4).** Herdr 0.9.3 keeps the last OSC 9;4 payload of a pane only as input for agent-state detection (`src/pane/osc.rs`, the `osc_progress` region of detection manifests). Nothing in the source draws it, in the sidebar or the tabs, or passes it on to the outer terminal; the client draws pane content itself. A live test with `printf '\e]9;4;1;50\a'` in a throwaway session changed nothing on screen. Sending it would show nothing and could feed Herdr's state detection, so pi-monitor does not.
+- **Startup note:** at `session_start` with reason `startup`, inside Herdr, in TUI mode and with `herdr` unset, one `ctx.ui.notify(…, "warning")` line, once per process, like other extensions' startup notes (pi-bare-worktrees). Pi draws warnings in yellow with a `Warning: ` prefix; `info` is dim grey and was easy to miss. `notify` takes plain text, so the commands are not highlighted separately.
+
 ## The bash interceptor
 
 The model does not have to know about `monitor` to avoid blocking. A `tool_call` handler looks at every `bash` call and moves waits and long-running commands to the background. A `tool_call` handler can only change the input or block, so it changes the command into something harmless that prints the answer. The model gets a normal, successful result.
@@ -319,10 +336,14 @@ Read from `~/.pi/agent/settings.json` and `.pi/settings.json` under `"monitor"`.
     "classifier": "typesafe/jev-latest",
     "desktopNotifications": true,
     "reducedMotion": false,
-    "shortcut": "ctrl+shift+m"
+    "shortcut": "ctrl+shift+m",
+    "herdr": "on",
+    "herdrAttention": false
   }
 }
 ```
+
+`herdr` is unset until the user runs `/monitors herdr` or `/monitors herdr off`; the command writes it to the user file.
 
 ## Code layout
 
@@ -345,7 +366,14 @@ src/
     triage.ts       skip list, keyword guess, classifier
     safety-net.ts   run unsure commands, hand back or move to the background
     rewrite.ts      printf and wait scripts
-  settings.ts
+  settings.ts       read settings, write one user setting under Pi's lock
+  herdr/
+    client.ts       detection, config path, socket client with backoff
+    tokens.ts       $mon text and the count tokens
+    sidebar.ts      report tokens: on change, once a second, TTL refresh, clear
+    attention.ts    herdr:blocked marks for failures nobody handles
+    config.ts       merge the rows into Herdr's config.toml
+    integration.ts  wiring, toasts, /monitors herdr, startup note
   sources/
     types.ts index.ts command.ts gh.ts gh-run.ts gh-pr.ts file.ts url.ts pid.ts
   ui/
@@ -362,12 +390,17 @@ src/
     renderer.ts     transcript messages
     bash-renderer.ts "→ monitor m3" under intercepted bash results
 scripts/
-  record-dock.ts    renders the real dock for docs/dock.gif (agg per frame, ffmpeg joins)
+  record-dock.ts    renders the real dock for docs/dock.gif
   dock-story.ts     the scripted fake monitors of that recording
+  record-herdr.ts   docs/herdr.gif: Herdr's sidebar and toasts next to the dock
+  herdr-story.ts    that scene: the dock story plus two more pi panes, run through the real Herdr code
+  herdr-view.ts     draws one frame of Herdr's window around the real dock
+  gif.ts            frames to GIF (agg per frame, unchanged cells kept, ffmpeg joins)
   pi-theme.ts       Pi's built-in themes, for tests and the recording
 tests/
   format, delivery (fake clock), gh (JSON fixtures), command (real processes, group kill),
-  sources (file, url, pid), patterns, triage (fake classifier), safety net (real processes), intercept, registry, resume, dock (several widths, stub theme), ui, extension
+  sources (file, url, pid), patterns, triage (fake classifier), safety net (real processes), intercept, registry, resume, dock (several widths, stub theme), ui, extension,
+  herdr-client (fake Unix socket server), herdr-sidebar (token, throttle, TTL, blocked mark), herdr-config (merge, old $ci removal, backup), herdr (command, note, toasts)
 ```
 
 ## Build order

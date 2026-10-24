@@ -1,6 +1,6 @@
 {
   "name": "@jordyvanvorselen/pi-monitor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Watch long-running processes like GitHub Actions runs in the background. Pi wakes only when something worth knowing happens.",
   "type": "module",
   "license": "MIT",
@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
     "record:dock": "node scripts/record-dock.ts",
+    "record:herdr": "node scripts/record-herdr.ts",
     "prepublishOnly": "npm run lint && npm run typecheck && npm test",
     "lint": "eslint . && npm run format",
     "lint:fix": "eslint . --fix && npm run format:fix",
@@ -59,5 +60,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "smol-toml": "^1.9.1"
   }
 }
