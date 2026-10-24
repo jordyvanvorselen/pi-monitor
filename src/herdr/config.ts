@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parse } from "smol-toml";
-import { GLYPHS, PANE_TOKEN } from "./tokens.ts";
+import { COUNT_TOKENS, GLYPHS, PANE_TOKEN } from "./tokens.ts";
 
 /** Rule colours, as `#RRGGBB`. */
 export interface HerdrPalette {
@@ -22,7 +22,7 @@ export const DEFAULT_SPACE_ROWS: Rows = [
 
 /** Every line pi-monitor writes has this comment right above it. */
 export const MARKER = "# pi-monitor";
-const ROWS_COMMENT = `${MARKER}: monitor row, added by /monitors herdr. Remove the $${PANE_TOKEN} row to undo.`;
+const ROWS_COMMENT = `${MARKER}: monitor rows, added by /monitors herdr. Remove the $${PANE_TOKEN} rows to undo.`;
 /** pi-monitor 0.3.0 previews also put a `$ci` row in the space rows. Setup takes it out again. */
 export const OLD_SPACE_TOKEN = "$ci";
 
@@ -47,12 +47,31 @@ export function monitorRow(palette: HerdrPalette): Entry[] {
 	return [{ token: `$${PANE_TOKEN}`, rules: rules(palette) }];
 }
 
+/** The counts row, `✗1 · ◐2 · ⏳1 · ✓1`: one token per state, each in its own colour. Herdr puts ` · ` between them. */
+export function countsRow(palette: HerdrPalette): Entry[] {
+	return [
+		{ token: `$${COUNT_TOKENS.failure}`, fg: palette.failed },
+		{ token: `$${COUNT_TOKENS.running}`, fg: palette.running },
+		{ token: `$${COUNT_TOKENS.waiting}`, fg: palette.running },
+		{ token: `$${COUNT_TOKENS.success}`, fg: palette.ok },
+	];
+}
+
+/** Our rows, appended below the user's agent rows. */
+export function monitorRows(palette: HerdrPalette): Rows {
+	return [monitorRow(palette), countsRow(palette)];
+}
+
+/** `$mon` and every `$mon_…` count token: entries pi-monitor owns. */
+const ours = (token: string | undefined) => token === `$${PANE_TOKEN}` || !!token?.startsWith(`$${PANE_TOKEN}_`);
+
 const tokenOf = (entry: unknown) =>
 	typeof entry === "string" ? entry : ((entry as { token?: unknown } | null)?.token as string | undefined);
 
-/** The rows without `token`, and without rows that become empty. */
-function without(rows: Rows, token: string): Rows {
-	return rows.map((row) => row.filter((entry) => tokenOf(entry) !== token)).filter((row) => row.length > 0);
+/** The rows without the matching tokens, and without rows that become empty. */
+function without(rows: Rows, token: string | ((token: string | undefined) => boolean)): Rows {
+	const drop = typeof token === "string" ? (t: string | undefined) => t === token : token;
+	return rows.map((row) => row.filter((entry) => !drop(tokenOf(entry)))).filter((row) => row.length > 0);
 }
 
 /** TOML for a value from a parsed config or from us: strings, numbers, booleans, arrays and inline tables. */
@@ -193,13 +212,13 @@ function lookup(doc: unknown, path: readonly string[]): unknown {
 
 /** What `/monitors herdr` adds, for people who edit the file themselves. */
 export function manualSnippet(palette: HerdrPalette = DEFAULT_PALETTE): string {
-	return ["[ui.sidebar.agents]", `rows = ${rowsValue([...DEFAULT_AGENT_ROWS, monitorRow(palette)])}`].join("\n");
+	return ["[ui.sidebar.agents]", `rows = ${rowsValue([...DEFAULT_AGENT_ROWS, ...monitorRows(palette)])}`].join("\n");
 }
 
 export interface MergeResult {
 	text: string;
 	changed: boolean;
-	/** The config already had our row; this run only refreshed it (new colours). */
+	/** The config already had our rows; this run refreshed them (new colours or the counts row). */
 	updated: boolean;
 	/** This run took the old `$ci` row out of the space rows. */
 	removedSpaceRow: boolean;
@@ -208,8 +227,9 @@ export interface MergeResult {
 }
 
 /**
- * Add the monitor row to Herdr's config text. Keeps the user's agent rows (or Herdr's defaults when there are
- * none) and appends a `$mon` row. The row goes to `rows_by_agent.pi` when the user has one for pi.
+ * Add the monitor rows to Herdr's config text. Keeps the user's agent rows (or Herdr's defaults when there are
+ * none) and appends a `$mon` row and a counts row. Older layouts (only the `$mon` row) are replaced. The rows go
+ * to `rows_by_agent.pi` when the user has one for pi.
  * Takes out the `$ci` space row that earlier versions added.
  * Running it again gives the same text. Everything else in the file stays as it is.
  */
@@ -228,7 +248,7 @@ export function mergeHerdrConfig(text: string, palette: HerdrPalette = DEFAULT_P
 				key: "rows",
 				rows: (lookup(doc, ["ui", "sidebar", "agents", "rows"]) as Rows | undefined) ?? DEFAULT_AGENT_ROWS,
 			};
-	const wantedAgents = [...without(agentTable.rows, `$${PANE_TOKEN}`), monitorRow(palette)];
+	const wantedAgents = [...without(agentTable.rows, ours), ...monitorRows(palette)];
 	const spaceRows = lookup(doc, ["ui", "sidebar", "spaces", "rows"]) as Rows | undefined;
 	const removedSpaceRow = Array.isArray(spaceRows) && JSON.stringify(spaceRows).includes(`"${OLD_SPACE_TOKEN}"`);
 	const wantedSpaces = removedSpaceRow ? without(spaceRows, OLD_SPACE_TOKEN) : spaceRows;

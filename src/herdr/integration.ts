@@ -236,9 +236,9 @@ export class HerdrIntegration {
 			return ui.notify(lines.join("\n"), "warning");
 		}
 
-		if (!result.changed) lines.push(`Herdr config: ${this.tilde(path)} already has the monitor row.`);
+		if (!result.changed) lines.push(`Herdr config: ${this.tilde(path)} already has the monitor rows.`);
 		else {
-			const row = `the $${PANE_TOKEN} agent row`;
+			const row = `the $${PANE_TOKEN} and counts agent rows`;
 			const what = result.created
 				? `created ${this.tilde(path)} with ${row}`
 				: result.updated
@@ -283,7 +283,7 @@ export class HerdrIntegration {
 		const path = herdrConfigPath(this.deps.env, this.home());
 		if (this.hasRows(path))
 			lines.push(
-				`The $${PANE_TOKEN} row in ${this.tilde(path)} stays and shows nothing. To remove it, delete that row below the "${MARKER}" comment.`,
+				`The $${PANE_TOKEN} rows in ${this.tilde(path)} stay and show nothing. To remove them, delete those rows below the "${MARKER}" comment.`,
 			);
 		ui.notify(lines.join("\n"), "info");
 	}
@@ -302,7 +302,7 @@ export class HerdrIntegration {
 		return [
 			`Herdr: ${this.target ? `pi runs in pane ${this.target.paneId}` : "pi does not run inside Herdr"}`,
 			`Sidebar: ${setting === "on" ? "on" : setting === "off" ? "off" : "not set up (/monitors herdr)"}${this.active ? ", sending" : ""}`,
-			`Config: ${this.hasRows(path) ? "has a" : "no"} monitor row in ${this.tilde(path)}`,
+			`Config: ${this.hasRows(path) ? "has" : "no"} monitor rows in ${this.tilde(path)}`,
 			`Blocked mark on failures (herdrAttention): ${this.deps.settings().herdrAttention ? "on" : "off"}`,
 			...(this.client?.backingOff ? ["Herdr did not answer the last request. pi-monitor tries again later."] : []),
 		].join("\n");

@@ -63,6 +63,7 @@ describe("Herdr config merge", () => {
 			["state_icon", "machine", "workspace", "tab"],
 			["agent"],
 			["$mon"],
+			["$mon_fail", "$mon_run", "$mon_wait", "$mon_ok"],
 		]);
 		assert.equal(rows(text, "ui", "sidebar", "spaces", "rows"), undefined, "monitors show per pane only");
 		assert.equal(toast, "on");
@@ -71,7 +72,7 @@ describe("Herdr config merge", () => {
 
 	it("colours the tokens by their first glyph: red failures, green successes, gold running", () => {
 		const { text } = mergeHerdrConfig("");
-		const mon = rows(text, "ui", "sidebar", "agents", "rows").at(-1)![0] as unknown as {
+		const mon = rows(text, "ui", "sidebar", "agents", "rows").at(-2)![0] as unknown as {
 			rules: { starts_with: string; fg: string }[];
 		};
 		const colour = Object.fromEntries(mon.rules.map((r) => [r.starts_with, r.fg]));
@@ -98,6 +99,7 @@ rows = [["workspace"], ["branch"]]
 			["state_icon", "agent", "state_text"],
 			["workspace", "tab"],
 			["$mon"],
+			["$mon_fail", "$mon_run", "$mon_wait", "$mon_ok"],
 		]);
 		assert.deepEqual(
 			{ ...(rows(text, "ui", "sidebar", "agents", "rows")[1]![0] as object) },
@@ -115,8 +117,42 @@ rows = [["workspace"], ["branch"]]
 			["agent"],
 			["terminal_title_stripped"],
 			["$mon"],
+			["$mon_fail", "$mon_run", "$mon_wait", "$mon_ok"],
 		]);
 		assert.equal(rows(text, "ui", "sidebar", "agents", "rows"), undefined);
+	});
+
+	it("puts the counts row under $mon, each count in its own colour", () => {
+		const { text } = mergeHerdrConfig("");
+		const counts = rows(text, "ui", "sidebar", "agents", "rows").at(-1)! as unknown as { token: string; fg: string }[];
+		assert.deepEqual(
+			counts.map((c) => [c.token, c.fg]),
+			[
+				["$mon_fail", DEFAULT_PALETTE.failed],
+				["$mon_run", DEFAULT_PALETTE.running],
+				["$mon_wait", DEFAULT_PALETTE.running],
+				["$mon_ok", DEFAULT_PALETTE.ok],
+			],
+		);
+	});
+
+	it("migrates the one-row layout to the $mon row plus the counts row, then stays put", () => {
+		const oneRow = `[ui.sidebar.agents]
+# pi-monitor: monitor row, added by /monitors herdr. Remove the $mon row to undo.
+rows = [
+  ["state_icon", "agent"],
+  [{ token = "$mon", rules = [{ starts_with = "✗", fg = "#FF5F6D" }] }],
+]
+`;
+		const migrated = mergeHerdrConfig(oneRow);
+		assert.equal(migrated.updated, true);
+		assert.deepEqual(tokens(rows(migrated.text, "ui", "sidebar", "agents", "rows")), [
+			["state_icon", "agent"],
+			["$mon"],
+			["$mon_fail", "$mon_run", "$mon_wait", "$mon_ok"],
+		]);
+		assert.equal((migrated.text.match(/# pi-monitor/g) ?? []).length, 1, "one comment, replaced");
+		assert.equal(mergeHerdrConfig(migrated.text).changed, false);
 	});
 
 	it("is idempotent: running it again changes nothing and does not add rows twice", () => {
@@ -146,7 +182,7 @@ rows = [["workspace"], ["branch"]]
 		}
 	});
 
-	it("adds the row inside an existing table that has none yet", () => {
+	it("adds the rows inside an existing table that has none yet", () => {
 		const { text } = mergeHerdrConfig(
 			`[ui.sidebar.agents]\nrow_gap = 1\n\n[ui.sidebar.agents.rows_by_agent]\nclaude = [["agent"]]\n`,
 		);
@@ -154,7 +190,7 @@ rows = [["workspace"], ["branch"]]
 			ui: { sidebar: { agents: { row_gap: number; rows: unknown[]; rows_by_agent: { claude: unknown[] } } } };
 		};
 		assert.equal(doc.ui.sidebar.agents.row_gap, 1);
-		assert.equal(doc.ui.sidebar.agents.rows.length, 3);
+		assert.equal(doc.ui.sidebar.agents.rows.length, 4);
 		assert.equal(doc.ui.sidebar.agents.rows_by_agent.claude.length, 1);
 		assert.equal((text.match(/\[ui\.sidebar\.agents\]/g) ?? []).length, 1);
 	});

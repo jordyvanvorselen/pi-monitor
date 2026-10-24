@@ -90,12 +90,66 @@ export function capChars(text: string, max: number): string {
 	return chars.length <= max ? text : `${chars.slice(0, max - 1).join("")}…`;
 }
 
-/** The `$mon` value: the most important monitor plus ` +2` for other running ones. Null when nothing shows. */
+/** The `$mon` value: the most important monitor. Null when nothing shows. */
 export function paneToken(items: readonly DockItem[], now: number): string | null {
 	const visible = bySidebarImportance(items.filter((i) => isVisible(i, now)));
 	const top = visible[0];
-	if (!top) return null;
-	const others = visible.filter((i) => i !== top && i.status === "running").length;
-	const more = others ? ` +${others}` : "";
-	return itemToken(top, now, MAX_TOKEN_CHARS - more.length) + more;
+	return top ? itemToken(top, now) : null;
+}
+
+/** Count tokens for the row under `$mon`, one per state, so the config can colour each one. */
+export const COUNT_TOKENS = {
+	failure: "mon_fail",
+	running: "mon_run",
+	waiting: "mon_wait",
+	success: "mon_ok",
+} as const;
+
+type CountState = keyof typeof COUNT_TOKENS;
+
+/** The glyph each count starts with: the same glyphs as `$mon`. */
+const COUNT_GLYPHS: Record<CountState, string> = {
+	failure: GLYPHS.failure,
+	running: GLYPHS.running,
+	waiting: GLYPHS.probation,
+	success: GLYPHS.success,
+};
+
+/** A GitHub run whose jobs all wait for a runner, as the dock shows it. */
+function queued(item: DockItem): boolean {
+	const jobs = item.progress.jobs ?? [];
+	return isGitHub(item) && !jobs.some((j) => j.state === "running") && jobs.some((j) => j.state === "queued");
+}
+
+function countState(item: DockItem): CountState | undefined {
+	if (hasFailure(item)) return "failure";
+	if (item.status === "running") return item.probationUntil !== undefined || queued(item) ? "waiting" : "running";
+	return item.status === "success" ? "success" : undefined;
+}
+
+/**
+ * Values for the count tokens: `✗1`, `◐2`, `⏳1`, `✓1`. Failures include timeouts and running runs with a
+ * failed job; waiting means a command on probation or a run waiting for a runner; success counts finish
+ * moments still on screen. Stopped and ended monitors are not counted. Zero is null, and with fewer than
+ * two visible monitors everything is null, so the row only shows when `$mon` does not tell the whole story.
+ */
+export function countTokens(items: readonly DockItem[], now: number): Record<string, string | null> {
+	const visible = items.filter((i) => isVisible(i, now));
+	const counts: Record<CountState, number> = { failure: 0, running: 0, waiting: 0, success: 0 };
+	if (visible.length >= 2)
+		for (const item of visible) {
+			const state = countState(item);
+			if (state) counts[state]++;
+		}
+	return Object.fromEntries(
+		(Object.keys(COUNT_TOKENS) as CountState[]).map((state) => [
+			COUNT_TOKENS[state],
+			counts[state] ? `${COUNT_GLYPHS[state]}${counts[state]}` : null,
+		]),
+	);
+}
+
+/** Every token pi-monitor reports for the pane: `$mon` and the counts. */
+export function sidebarTokens(items: readonly DockItem[], now: number): Record<string, string | null> {
+	return { [PANE_TOKEN]: paneToken(items, now), ...countTokens(items, now) };
 }

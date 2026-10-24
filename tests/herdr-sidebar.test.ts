@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Attention, BLOCKED_EVENT, GRACE_MS } from "../src/herdr/attention.ts";
 import { HerdrSidebar, MIN_INTERVAL_MS, REFRESH_MS, SOURCE, TTL_MS } from "../src/herdr/sidebar.ts";
-import { capChars, etaCells, MAX_TOKEN_CHARS, paneToken } from "../src/herdr/tokens.ts";
+import { capChars, countTokens, etaCells, MAX_TOKEN_CHARS, paneToken } from "../src/herdr/tokens.ts";
 import type { Job } from "../src/sources/types.ts";
 import type { DockItem } from "../src/ui/dock.ts";
 import { FakeClock } from "./helpers.ts";
@@ -58,9 +58,9 @@ describe("Herdr tokens", () => {
 		assert.equal(paneToken([{ ...ci, startedAt: NOW - 30_000 }], NOW), "◐ CI #42 3/5");
 	});
 
-	it("puts failures first, then running GitHub runs, then other running monitors, and counts the other running ones", () => {
-		assert.equal(paneToken([devServer, ci, failing], NOW), "✗ e2e #17 checkout failed +2");
-		assert.equal(paneToken([devServer, ci], NOW), "◐ CI #42 3/5 · 4m +1");
+	it("puts failures first, then running GitHub runs, then other running monitors, without a +N count", () => {
+		assert.equal(paneToken([devServer, ci, failing], NOW), "✗ e2e #17 checkout failed");
+		assert.equal(paneToken([devServer, ci], NOW), "◐ CI #42 3/5 · 4m");
 		assert.equal(paneToken([devServer], NOW), "◐ dev server · 10m");
 	});
 
@@ -73,7 +73,7 @@ describe("Herdr tokens", () => {
 			summary: "CI #42 green in 6m02s",
 			endedAt: NOW - 2_000,
 		});
-		assert.equal(paneToken([devServer, green], NOW), "✓ CI #42 green in 6m02s +1");
+		assert.equal(paneToken([devServer, green], NOW), "✓ CI #42 green in 6m02s");
 		assert.equal(paneToken([devServer, green], NOW + 9_000), "◐ dev server · 10m");
 		assert.equal(paneToken([green], NOW + 9_000), null);
 	});
@@ -89,11 +89,11 @@ describe("Herdr tokens", () => {
 		assert.equal(paneToken([{ ...devServer, paused: true }], NOW), "‖ dev server paused");
 	});
 
-	it("stays within Herdr's 80 characters by cutting the name, keeping the glyph, bar, counts and +N", () => {
+	it("stays within Herdr's 80 characters by cutting the name, keeping the glyph, bar and job counts", () => {
 		const long = { ...ci, progress: { title: "x".repeat(120), jobs, etaMs: 500_000 } };
 		const token = paneToken([long, devServer], NOW)!;
 		assert.equal(Array.from(token).length, MAX_TOKEN_CHARS);
-		assert.match(token, /^◐ x+… ▰▰▱▱▱ 3\/5 · 4m \+1$/);
+		assert.match(token, /^◐ x+… ▰▰▱▱▱ 3\/5 · 4m$/);
 		assert.equal(capChars("✓".repeat(81), 80).length, 80);
 		const failedLong = { ...failing, progress: { ...failing.progress, title: "y".repeat(120) } };
 		assert.match(paneToken([failedLong], NOW)!, /^✗ y+…$/, "other states are cut at the end and keep their glyph");
@@ -134,6 +134,42 @@ describe("Herdr tokens", () => {
 		assert.equal(paneToken([green], NOW), "✓ CI #42 green in 6m02s");
 	});
 
+	it("counts monitors per state with the same glyphs as $mon: ✗1 ◐2 ⏳1", () => {
+		const probation = item({ id: "m4", kind: "command", status: "running", probationUntil: NOW + 9_000 });
+		assert.deepEqual(countTokens([failing, ci, devServer, probation], NOW), {
+			mon_fail: "✗1",
+			mon_run: "◐2",
+			mon_wait: "⏳1",
+			mon_ok: null,
+		});
+	});
+
+	it("counts runs waiting for a runner as waiting, finish moments as ok, and leaves stopped ones out", () => {
+		const queued = item({
+			id: "m5",
+			kind: "gh_pr",
+			status: "running",
+			progress: { jobs: [{ name: "build", state: "queued" }] },
+		});
+		const green = item({ id: "m6", kind: "gh_run", status: "success", endedAt: NOW - 1_000 });
+		const timedOut = item({ id: "m7", kind: "url", status: "timeout", endedAt: NOW - 1_000 });
+		const stopped = item({ id: "m8", kind: "command", status: "stopped", endedAt: NOW - 1_000 });
+		assert.deepEqual(countTokens([queued, green, timedOut, stopped], NOW), {
+			mon_fail: "✗1",
+			mon_run: null,
+			mon_wait: "⏳1",
+			mon_ok: "✓1",
+		});
+	});
+
+	it("hides the counts row with fewer than two monitors on screen", () => {
+		const none = { mon_fail: null, mon_run: null, mon_wait: null, mon_ok: null };
+		assert.deepEqual(countTokens([], NOW), none);
+		assert.deepEqual(countTokens([failing], NOW), none, "$mon already says it all");
+		const expired = item({ id: "m6", kind: "gh_run", status: "success", endedAt: NOW - 60_000 });
+		assert.deepEqual(countTokens([ci, expired], NOW), none, "a finished row that left the dock does not count");
+	});
+
 	it("is null without monitors, so the sidebar row disappears", () => {
 		assert.equal(paneToken([], NOW), null);
 	});
@@ -162,14 +198,19 @@ function sidebarSetup(items: DockItem[], options: { fail?: boolean } = {}) {
 }
 
 describe("Herdr sidebar sync", () => {
-	it("reports only the pane token, with one fixed source and a TTL", async () => {
+	it("reports $mon and the count tokens in one pane report, with one fixed source and a TTL", async () => {
 		const { sidebar, settle, requests } = sidebarSetup([ci]);
 		sidebar.update();
 		await settle();
 		assert.deepEqual(requests, [
 			{
 				method: "pane.report_metadata",
-				params: { pane_id: "w1:p1", source: SOURCE, tokens: { mon: "◐ CI #42 3/5 · 4m" }, ttl_ms: TTL_MS },
+				params: {
+					pane_id: "w1:p1",
+					source: SOURCE,
+					tokens: { mon: "◐ CI #42 3/5 · 4m", mon_fail: null, mon_run: null, mon_wait: null, mon_ok: null },
+					ttl_ms: TTL_MS,
+				},
 			},
 		]);
 	});
@@ -199,6 +240,29 @@ describe("Herdr sidebar sync", () => {
 		await step(MIN_INTERVAL_MS);
 		assert.equal(panes().length, 2);
 		assert.equal(panes()[1]!.tokens && (panes()[1]!.tokens as Record<string, string>).mon, "◐ CI #42 5/5 · 4m");
+	});
+
+	it("sends only the tokens that changed: a second monitor shows the counts row, its end hides it again", async () => {
+		const items: DockItem[] = [ci];
+		const { sidebar, settle, step, panes } = sidebarSetup(items);
+		sidebar.update();
+		await settle();
+		items.push(devServer);
+		await step(MIN_INTERVAL_MS);
+		assert.deepEqual(panes()[1]!.tokens, { mon_run: "◐2" });
+		items.pop();
+		await step(MIN_INTERVAL_MS);
+		assert.deepEqual(panes()[2]!.tokens, { mon_run: null });
+	});
+
+	it("refreshes the TTL of every shown token, also the counts", async () => {
+		const { sidebar, settle, step, panes } = sidebarSetup([ci, devServer]);
+		sidebar.update();
+		await settle();
+		for (let t = 0; t < REFRESH_MS; t += MIN_INTERVAL_MS) await step(MIN_INTERVAL_MS);
+		assert.equal(panes().length, 2);
+		assert.deepEqual(panes()[1]!.tokens, { mon: "◐ CI #42 3/5 · 4m", mon_run: "◐2" });
+		assert.equal(panes()[1]!.ttl_ms, TTL_MS);
 	});
 
 	it("refreshes the TTL while a token shows", async () => {
@@ -239,15 +303,16 @@ describe("Herdr sidebar sync", () => {
 		assert.equal(panes().length, 2, "one failed and one good report, then quiet");
 	});
 
-	it("clears its token when stopped", async () => {
-		const { sidebar, settle, requests } = sidebarSetup([ci]);
+	it("clears all its tokens when stopped", async () => {
+		const { sidebar, settle, requests } = sidebarSetup([ci, devServer]);
 		sidebar.update();
 		await settle();
 		await sidebar.stop();
 		assert.deepEqual(
 			requests.slice(1).map((r) => r.params.tokens),
-			[{ mon: null }],
+			[{ mon: null, mon_run: null }],
 		);
+		assert.equal("ttl_ms" in requests[1]!.params, false);
 		assert.equal(sidebar.ticking, false);
 	});
 });
