@@ -390,8 +390,12 @@ src/
     renderer.ts     transcript messages
     bash-renderer.ts "→ monitor m3" under intercepted bash results
 scripts/
-  record-dock.ts    renders the real dock for docs/dock.gif (agg per frame, ffmpeg joins)
+  record-dock.ts    renders the real dock for docs/dock.gif
   dock-story.ts     the scripted fake monitors of that recording
+  record-herdr.ts   docs/herdr.gif: Herdr's sidebar and toasts next to the dock
+  herdr-story.ts    that scene: the dock story plus two more pi panes, run through the real Herdr code
+  herdr-view.ts     draws one frame of Herdr's window around the real dock
+  gif.ts            frames to GIF (agg per frame, unchanged cells kept, ffmpeg joins)
   pi-theme.ts       Pi's built-in themes, for tests and the recording
 tests/
   format, delivery (fake clock), gh (JSON fixtures), command (real processes, group kill),

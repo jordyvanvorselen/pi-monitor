@@ -152,6 +152,12 @@ Things to know:
 
 ## Herdr
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jordyvanvorselen/pi-monitor/main/docs/herdr.gif" alt="Herdr with pi-monitor rows in its sidebar. Under the webapp pi agent, the monitor row shows CI #42 running with an ETA bar and a counts row of two running and one waiting. The test job fails and the row turns red with a failure count, while the dock in the pi pane shows the same run. In the Backend Tests space, e2e #17 fails with a red toast and the agent is marked blocked. CI #42 goes green, Deploy #88 in the site space goes green with a toast, and the finished rows and the counts row disappear." width="100%">
+</p>
+
+<p align="center"><sub>Herdr's sidebar with pi-monitor's rows next to the dock, from the same story.</sub></p>
+
 When pi runs inside [Herdr](https://herdr.dev), pi-monitor can show your monitors in the agents section of the Herdr sidebar, so you see CI from any tab.
 
 ```
@@ -269,6 +275,8 @@ npm test
 Run `npm run lint:fix` to fix lint and formatting problems. Tests never call the real `gh`: sources get a `run()` function that the tests replace with recorded JSON fixtures.
 
 The dock animation in this README is recorded from the real dock renderer. After changing the dock, run `npm run record:dock` to write a new `docs/dock.gif`. It needs [agg](https://github.com/asciinema/agg) and ffmpeg (`brew install agg ffmpeg`). The story of fake monitors is in `scripts/dock-story.ts`. The GIF is not part of the npm package.
+
+The Herdr animation (`docs/herdr.gif`) runs the same story through pi-monitor's real Herdr code (sidebar tokens, toasts, blocked marks) on a virtual clock, and draws Herdr's window around the real dock: the sidebar rows and colours are what `/monitors herdr` sets up, the rest of the window is drawn to look like Herdr with the Catppuccin theme. Run `npm run record:herdr` to write a new one. The scene is in `scripts/herdr-story.ts`, the drawing in `scripts/herdr-view.ts`.
 
 ## Versioning and releases
 

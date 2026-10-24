@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
     "record:dock": "node scripts/record-dock.ts",
+    "record:herdr": "node scripts/record-herdr.ts",
     "prepublishOnly": "npm run lint && npm run typecheck && npm test",
     "lint": "eslint . && npm run format",
     "lint:fix": "eslint . --fix && npm run format:fix",

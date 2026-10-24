@@ -44,6 +44,26 @@ export interface HerdrDeps {
 
 type Ui = { notify(message: string, type?: "info" | "warning" | "error"): void; theme?: unknown };
 
+/** The Herdr toast for a finished monitor: `✓ CI #42 green in 6m02s`, from `pi · <project>`. */
+export function toastFor(record: DockItem, cwd: string): { title: string; body: string; sound: "done" | "request" } {
+	const glyph =
+		record.status === "success" ? GLYPHS.success : record.status === "timeout" ? GLYPHS.timeout : GLYPHS.failure;
+	return {
+		title: capChars(`${glyph} ${finishedText(record)}`, 80),
+		body: `pi · ${basename(cwd)}`,
+		sound: record.status === "success" ? "done" : "request",
+	};
+}
+
+/** Rule colours from pi's theme, so the sidebar matches the dock. Falls back to the launch video palette. */
+export function paletteFor(theme: unknown): HerdrPalette {
+	const look = theme ? lookFor(theme as ThemeColors) : undefined;
+	if (!look) return DEFAULT_PALETTE;
+	const hex = (rgb: readonly number[]) =>
+		`#${rgb.map((c) => Math.round(c).toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+	return { ok: hex(look.success), failed: hex(look.error), running: hex(look.warning) };
+}
+
 /** Herdr sidebar tokens, toasts and the blocked mark, for pi running in a Herdr pane. */
 export class HerdrIntegration {
 	readonly target: HerdrTarget | undefined;
@@ -118,19 +138,11 @@ export class HerdrIntegration {
 	 */
 	notify(record: DockItem, fallback: () => void): void {
 		if (!this.active || !this.client) return fallback();
-		const glyph =
-			record.status === "success" ? GLYPHS.success : record.status === "timeout" ? GLYPHS.timeout : GLYPHS.failure;
-		void this.client
-			.request("notification.show", {
-				title: capChars(`${glyph} ${finishedText(record)}`, 80),
-				body: `pi · ${basename(this.deps.cwd())}`,
-				sound: record.status === "success" ? "done" : "request",
-			})
-			.then((reply) => {
-				if (!reply) fallback();
-				else if (reply.result?.reason && reply.result.reason !== "shown")
-					this.deps.log(`herdr: notification not shown: ${String(reply.result.reason)}`);
-			});
+		void this.client.request("notification.show", toastFor(record, this.deps.cwd())).then((reply) => {
+			if (!reply) fallback();
+			else if (reply.result?.reason && reply.result.reason !== "shown")
+				this.deps.log(`herdr: notification not shown: ${String(reply.result.reason)}`);
+		});
 	}
 
 	/** `/monitors herdr [off|status]`. */
@@ -177,11 +189,7 @@ export class HerdrIntegration {
 	}
 
 	private palette(theme: unknown): HerdrPalette {
-		const look = theme ? lookFor(theme as ThemeColors) : undefined;
-		if (!look) return DEFAULT_PALETTE;
-		const hex = (rgb: readonly number[]) =>
-			`#${rgb.map((c) => Math.round(c).toString(16).padStart(2, "0")).join("")}`.toUpperCase();
-		return { ok: hex(look.success), failed: hex(look.error), running: hex(look.warning) };
+		return paletteFor(theme);
 	}
 
 	/** Ask the herdr binary whether a config file is valid. Undefined when it is, or when we cannot tell. */
