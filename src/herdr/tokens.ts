@@ -1,5 +1,6 @@
-import { formatShortDuration } from "../format.ts";
-import { displayName, finishedText, hasFailure, isVisible, PROBATION_GLYPH, type DockItem } from "../ui/dock.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { formatDuration, formatShortDuration } from "../format.ts";
+import { displayName, hasFailure, isVisible, PROBATION_GLYPH, type DockItem } from "../ui/dock.ts";
 import { jobCounts } from "../ui/glyphs.ts";
 
 /** Pane token for the agent row: the most important monitor. */
@@ -42,11 +43,6 @@ export function bySidebarImportance(items: readonly DockItem[]): DockItem[] {
 	);
 }
 
-/** Whole minutes only, so the token changes at most once a minute while nothing else happens. */
-function elapsed(ms: number): string {
-	return ms < 60_000 ? "" : ` · ${formatShortDuration(ms)}`;
-}
-
 /** Cells of the ETA bar in the token. */
 export const BAR_CELLS = 5;
 
@@ -60,28 +56,138 @@ export function etaCells(elapsedMs: number, etaMs: number, cells = BAR_CELLS): s
 	return "▰".repeat(filled) + "▱".repeat(cells - filled);
 }
 
-/** `glyph name rest`, with the name cut so the whole line fits in `max` characters. The glyph stays first. */
-function fitName(glyph: string, name: string, rest: string, max: number): string {
-	const room = max - Array.from(`${glyph} ${rest}`).length;
-	return `${glyph} ${capChars(name, Math.max(1, room))}${rest}`;
+/** Herdr's sidebar is 26 columns by default. `$mon` aims at this many, so it fits next to the row's indent. */
+export const TARGET_COLUMNS = 22;
+/** A name is cut to this many columns before anything else goes. */
+export const NAME_MIN = 8;
+/** A detail such as a failed job name is cut to this many columns at least. */
+const DETAIL_MIN = 4;
+
+/**
+ * One part of a token after the name. `drop`: may go when the line is too long, lowest first.
+ * `cut`: may be cut short. Neither: always stays, like the ` ↳` marker.
+ */
+interface Part {
+	text: string;
+	drop?: number;
+	cut?: boolean;
+}
+
+const segmenter = new Intl.Segmenter();
+
+/** Cut `text` to `cols` terminal columns with `…`. Counts wide characters as two. */
+export function cutColumns(text: string, cols: number): string {
+	if (visibleWidth(text) <= cols) return text;
+	if (cols < 1) return "";
+	let out = "";
+	let width = 0;
+	for (const { segment } of segmenter.segment(text)) {
+		const w = visibleWidth(segment);
+		if (width + w > cols - 1) break;
+		out += segment;
+		width += w;
+	}
+	return `${out.trimEnd()}…`;
 }
 
 /**
- * One monitor as sidebar text, without colour: `◐ CI #42 ▰▰▰▱▱ 3/5 · 4m`, `✗ CI #42 test failed`,
- * `✓ CI #42 green in 6m02s`. At most `max` characters; a long name is cut before the bar and counts are.
+ * `glyph name part part…`, aiming at `target` columns. The glyph always stays first. Order when it does not fit:
+ * cut the name to `NAME_MIN` columns, drop the droppable parts (lowest `drop` first, giving the name its room
+ * back), cut the detail part to `DETAIL_MIN`, then cut the name further. The hard cap is Herdr's 80 characters.
  */
-export function itemToken(item: DockItem, now: number, max = MAX_TOKEN_CHARS): string {
-	if (item.status !== "running") return capChars(`${GLYPHS[item.status]} ${finishedText(item)}`, max);
+export function compose(glyph: string, name: string, parts: readonly Part[], target = TARGET_COLUMNS): string {
+	let kept = [...parts];
+	const drops = parts.filter((p) => p.drop !== undefined).sort((a, b) => a.drop! - b.drop!);
+	const line = (n: string, ps: readonly Part[]) => `${glyph} ${n}${ps.map((p) => ` ${p.text}`).join("")}`;
+	const room = (ps: readonly Part[]) => target - visibleWidth(line("", ps));
+	const nameMin = Math.min(NAME_MIN, visibleWidth(name));
+	for (;;) {
+		if (room(kept) >= nameMin) return capChars(line(cutColumns(name, room(kept)), kept), MAX_TOKEN_CHARS);
+		const next = drops.shift();
+		if (!next) break;
+		kept = kept.filter((p) => p !== next);
+	}
+	const short = cutColumns(name, nameMin);
+	const over = visibleWidth(line(short, kept)) - target;
+	kept = kept.map((p) => (p.cut ? { text: cutColumns(p.text, Math.max(DETAIL_MIN, visibleWidth(p.text) - over)) } : p));
+	const left = Math.max(1, room(kept));
+	return capChars(line(cutColumns(name, Math.min(nameMin, left)), kept), MAX_TOKEN_CHARS);
+}
+
+/** How long a monitor ran, in the dock's format: `2m40s`. GitHub runs count from the run's own start. */
+function took(item: DockItem): string {
+	return formatDuration((item.endedAt ?? item.startedAt) - (item.progress.startedAt ?? item.startedAt));
+}
+
+const CONCLUSION = /\b(cancelled|timed_out|startup_failure|action_required)\b/;
+
+/** The short reason of a failure: the failed job, the exit code or signal, else `failed`. */
+function failureDetail(item: DockItem): string {
+	const job = (item.progress.jobs ?? []).find((j) => j.state === "failure");
+	if (job) return job.name;
+	const summary = item.summary ?? "";
+	const code = /exited with code (\d+)/.exec(summary);
+	if (code) return `code ${code[1]}`;
+	const signal = /killed by (\S+)/.exec(summary);
+	if (signal) return signal[1]!;
+	const conclusion = CONCLUSION.exec(summary);
+	if (conclusion) return conclusion[1]!.replace("_", " ");
+	if (summary.startsWith("could not start")) return "could not start";
+	return "failed";
+}
+
+/** Failed jobs after the first: ` +2`. */
+function moreFailed(item: DockItem): Part[] {
+	const failed = (item.progress.jobs ?? []).filter((j) => j.state === "failure").length;
+	return failed > 1 ? [{ text: `+${failed - 1}`, drop: 1 }] : [];
+}
+
+/** The end of a monitor, short: `✓ Deploy #88 2m40s`, `✗ e2e #17 checkout`, `✗ tests code 1`, `◔ build timed out`. */
+function finishedParts(item: DockItem): Part[] {
+	switch (item.status) {
+		case "success":
+			return [{ text: took(item), drop: 0 }];
+		case "failure":
+			return [{ text: failureDetail(item), cut: true }, ...moreFailed(item)];
+		case "timeout":
+			return [{ text: "timed out", cut: true }];
+		case "stopped":
+			return [{ text: "stopped", cut: true }];
+		default:
+			return [{ text: "ended", cut: true }];
+	}
+}
+
+/** ` ↳` while the model handles a message from this monitor, like the dock's "pi is on it ↳". */
+const HANDLING: Part = { text: "↳" };
+
+/**
+ * One monitor as sidebar text, without colour: `◐ CI #42 ▰▰▰▱▱ 3/5 4m`, `✗ CI #42 test ↳`, `✓ CI #42 6m02s`.
+ * Aims at `target` columns (see `compose` for what goes first) and never passes Herdr's 80 characters.
+ * Running rows drop the clock first, then the ETA bar, then the job counts.
+ */
+export function itemToken(item: DockItem, now: number, target = TARGET_COLUMNS): string {
 	const name = displayName(item);
-	if (item.probationUntil !== undefined) return fitName(GLYPHS.probation, name, "", max);
-	if (item.paused) return fitName(GLYPHS.paused, name, " paused", max);
+	const handling = item.handling ? [HANDLING] : [];
+	if (item.status !== "running")
+		return compose(GLYPHS[item.status], name, [...finishedParts(item), ...handling], target);
+	if (item.probationUntil !== undefined) return compose(GLYPHS.probation, name, handling, target);
+	if (item.paused) return compose(GLYPHS.paused, name, [{ text: "paused", cut: true }, ...handling], target);
 	const jobs = item.progress.jobs ?? [];
-	const failed = jobs.find((j) => j.state === "failure");
-	if (failed) return capChars(`${GLYPHS.failure} ${name} ${failed.name} failed`, max);
+	if (jobs.some((j) => j.state === "failure"))
+		return compose(
+			GLYPHS.failure,
+			name,
+			[{ text: failureDetail(item), cut: true }, ...moreFailed(item), ...handling],
+			target,
+		);
 	const ms = now - (item.progress.startedAt ?? item.startedAt);
-	const eta = isGitHub(item) && item.progress.etaMs ? ` ${etaCells(ms, item.progress.etaMs)}` : "";
-	const counts = jobs.length ? ` ${jobCounts(jobs).done}/${jobs.length}` : "";
-	return fitName(GLYPHS.running, name, `${eta}${counts}${elapsed(ms)}`, max);
+	const parts: Part[] = [];
+	if (isGitHub(item) && item.progress.etaMs) parts.push({ text: etaCells(ms, item.progress.etaMs), drop: 1 });
+	if (jobs.length) parts.push({ text: `${jobCounts(jobs).done}/${jobs.length}`, drop: 2 });
+	// Whole minutes only, so the clock changes at most once a minute. None in the first minute.
+	if (ms >= 60_000) parts.push({ text: formatShortDuration(ms), drop: 0 });
+	return compose(GLYPHS.running, name, [...parts, ...handling], target);
 }
 
 /** Cut to `max` characters with `…`, counting code points like Herdr does. */

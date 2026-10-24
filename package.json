@@ -1,6 +1,6 @@
 {
   "name": "@jordyvanvorselen/pi-monitor",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Watch long-running processes like GitHub Actions runs in the background. Pi wakes only when something worth knowing happens.",
   "type": "module",
   "license": "MIT",

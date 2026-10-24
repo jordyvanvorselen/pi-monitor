@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 import { basename } from "node:path";
 import type { Clock } from "../delivery.ts";
 import type { MonitorRecord } from "../registry.ts";
-import { saveUserSetting, type Settings } from "../settings.ts";
-import { finishedText, type DockItem } from "../ui/dock.ts";
+import { isSet, saveUserSetting, userSettingsPath, type Settings } from "../settings.ts";
+import { displayName, finishedText, type DockItem } from "../ui/dock.ts";
 import { lookFor, type ThemeColors } from "../ui/look.ts";
 import { Attention } from "./attention.ts";
 import { detectHerdr, HerdrClient, herdrConfigPath, type HerdrReply, type HerdrTarget } from "./client.ts";
@@ -40,9 +40,23 @@ export interface HerdrDeps {
 	log(message: string): void;
 	emit(channel: string, data: unknown): void;
 	cwd(): string;
+	/** The terminal notification, for when Herdr cannot be reached. */
+	desktop(title: string, body: string): void;
 }
 
-type Ui = { notify(message: string, type?: "info" | "warning" | "error"): void; theme?: unknown };
+type Ui = {
+	notify(message: string, type?: "info" | "warning" | "error"): void;
+	/** pi's picker. Missing in print mode and in some tests: then the command says how to set it by hand. */
+	select?(title: string, options: string[]): Promise<string | undefined>;
+	theme?: unknown;
+};
+
+/** The answers `/monitors herdr` offers for the blocked mark. */
+export const ATTENTION_CHOICES = {
+	on: "Yes, mark pi as blocked when a monitor fails and pi is not on it",
+	off: "No, only show the sidebar row and toasts",
+} as const;
+export const ATTENTION_QUESTION = "Mark this pi as blocked in Herdr when a monitor fails?";
 
 /** The Herdr toast for a finished monitor: `✓ CI #42 green in 6m02s`, from `pi · <project>`. */
 export function toastFor(record: DockItem, cwd: string): { title: string; body: string; sound: "done" | "request" } {
@@ -53,6 +67,43 @@ export function toastFor(record: DockItem, cwd: string): { title: string; body: 
 		body: `pi · ${basename(cwd)}`,
 		sound: record.status === "success" ? "done" : "request",
 	};
+}
+
+/** The Herdr toast for a GitHub run whose first job failed while the rest still runs: `✗ CI #42 test failed`. */
+export function failingToastFor(record: DockItem, cwd: string): { title: string; body: string; sound: "request" } {
+	const failed = (record.progress.jobs ?? []).filter((j) => j.state === "failure").map((j) => j.name);
+	return {
+		title: capChars(`${GLYPHS.failure} ${displayName(record)} ${failed.join(", ")} failed`, 80),
+		body: `pi · ${basename(cwd)} · still running`,
+		sound: "request",
+	};
+}
+
+/**
+ * Remembers which run attempts already got a toast for a failed job while running. A run attempt is a
+ * monitor id plus `failingSince`: a rerun clears the failed jobs, so its first failure is new again.
+ */
+export class FailureToasts {
+	private readonly toasted = new Map<string, number>();
+
+	/** Running monitors that got their first failed job since the last call. Marks them as toasted. */
+	due(records: readonly DockItem[]): DockItem[] {
+		return records.filter((record) => {
+			const since = record.failingSince;
+			if (record.status !== "running" || since === undefined || this.toasted.get(record.id) === since) return false;
+			this.toasted.set(record.id, since);
+			return true;
+		});
+	}
+
+	/**
+	 * True when the end of `record` would repeat a toast that already went out: a run that ends as failed after
+	 * a toast for a failed job in the same attempt. A timeout is new information and still gets its toast.
+	 */
+	covers(record: DockItem): boolean {
+		const since = record.failingSince;
+		return record.status === "failure" && since !== undefined && this.toasted.get(record.id) === since;
+	}
 }
 
 /** Rule colours from pi's theme, so the sidebar matches the dock. Falls back to the launch video palette. */
@@ -73,6 +124,7 @@ export class HerdrIntegration {
 	private sidebar: HerdrSidebar | undefined;
 	private tui = false;
 	private noteShown = false;
+	private readonly failures = new FailureToasts();
 
 	constructor(deps: HerdrDeps) {
 		this.deps = deps;
@@ -118,7 +170,9 @@ export class HerdrIntegration {
 	changed(): void {
 		if (!this.active) return;
 		this.sidebar?.update();
-		this.attention.sync(this.deps.monitors().filter((m) => m.status === "running"));
+		const running = this.deps.monitors().filter((m) => m.status === "running");
+		this.attention.sync(running);
+		for (const record of this.failures.due(running)) this.notifyFailing(record);
 	}
 
 	/** A monitor ended. Failures may mark the pane as blocked. */
@@ -138,7 +192,21 @@ export class HerdrIntegration {
 	 */
 	notify(record: DockItem, fallback: () => void): void {
 		if (!this.active || !this.client) return fallback();
-		void this.client.request("notification.show", toastFor(record, this.deps.cwd())).then((reply) => {
+		// The failed job already had its toast while the run went on. The end says nothing new.
+		if (this.failures.covers(record)) return;
+		this.show(toastFor(record, this.deps.cwd()), fallback);
+	}
+
+	/** One toast when a running GitHub run first gets a failed job, once per run attempt. */
+	private notifyFailing(record: DockItem): void {
+		if (!this.deps.settings().desktopNotifications || record.probationUntil !== undefined) return;
+		const toast = failingToastFor(record, this.deps.cwd());
+		this.show(toast, () => this.deps.desktop("pi · monitor", `${toast.title}, the run goes on`));
+	}
+
+	private show(toast: { title: string; body: string; sound: string }, fallback: () => void): void {
+		if (!this.client) return fallback();
+		void this.client.request("notification.show", toast).then((reply) => {
 			if (!reply) fallback();
 			else if (reply.result?.reason && reply.result.reason !== "shown")
 				this.deps.log(`herdr: notification not shown: ${String(reply.result.reason)}`);
@@ -241,7 +309,7 @@ export class HerdrIntegration {
 				manualSnippet(this.palette(ui.theme)),
 			);
 			await this.apply();
-			return ui.notify(lines.join("\n"), "warning");
+			return await this.finishSetup(ui, lines, "warning");
 		}
 
 		if (!result.changed) lines.push(`Herdr config: ${this.tilde(path)} already has the monitor rows.`);
@@ -277,7 +345,37 @@ export class HerdrIntegration {
 		if (!this.target) lines.push("Monitors show in the sidebar when pi runs inside Herdr.");
 		else if (!this.tui) lines.push("Monitors show in the sidebar in pi's interactive mode.");
 		await this.apply();
+		await this.finishSetup(ui, lines, level);
+	}
+
+	/**
+	 * Show what setup did, then offer the blocked mark once: only while `herdrAttention` is not set anywhere, so
+	 * people who never run the command keep the default (off). Without pi's picker, say how to turn it on.
+	 */
+	private async finishSetup(ui: Ui, lines: string[], level: "info" | "warning"): Promise<void> {
+		const ask = !isSet("herdrAttention", this.deps.cwd(), this.home());
+		const path = this.tilde(userSettingsPath(this.home()));
+		if (ask && !ui.select)
+			lines.push(
+				`Blocked mark: add "herdrAttention": true to the "monitor" section of ${path} to mark pi as blocked in Herdr when a monitor fails and pi is not on it.`,
+			);
 		ui.notify(lines.join("\n"), level);
+		if (!ask || !ui.select) return;
+		const answer = await ui.select(ATTENTION_QUESTION, [ATTENTION_CHOICES.on, ATTENTION_CHOICES.off]);
+		if (answer === undefined)
+			return ui.notify(
+				`Blocked mark not set. To turn it on later, add "herdrAttention": true to the "monitor" section of ${path}.`,
+				"info",
+			);
+		const on = answer === ATTENTION_CHOICES.on;
+		saveUserSetting("herdrAttention", on, this.home());
+		this.deps.reloadSettings();
+		ui.notify(
+			on
+				? `Blocked mark on. Setting: "herdrAttention": true in the "monitor" section of ${path}`
+				: `Blocked mark off. Setting: "herdrAttention": false in the "monitor" section of ${path}. Set it to true to turn it on.`,
+			"info",
+		);
 	}
 
 	private async turnOff(ui: Ui): Promise<void> {

@@ -1,7 +1,7 @@
 import type { Clock } from "../delivery.ts";
 import { isVisible, type DockItem } from "../ui/dock.ts";
 import type { HerdrReply } from "./client.ts";
-import { sidebarTokens } from "./tokens.ts";
+import { PANE_TOKEN, sidebarTokens } from "./tokens.ts";
 
 /** Fixed metadata source. Herdr keeps at most 32 sources per pane for its lifetime, so never vary it. */
 export const SOURCE = "pi-monitor";
@@ -11,6 +11,8 @@ export const TTL_MS = 60_000;
 export const REFRESH_MS = 30_000;
 /** At most one report per this interval: every token change resends the sidebar to SSH clients. */
 export const MIN_INTERVAL_MS = 1_000;
+/** Text-only changes of `$mon` (clock, ETA bar, job counts, name) wait until this long after the last report. */
+export const TEXT_INTERVAL_MS = 5_000;
 
 export interface SidebarDeps {
 	request(method: string, params: Record<string, unknown>): Promise<HerdrReply | undefined>;
@@ -23,11 +25,26 @@ export interface SidebarDeps {
 
 type Tokens = Record<string, string | null>;
 
+const glyph = (value: string | null | undefined) => (value ? Array.from(value)[0] : value);
+
+const onIt = (value: string | null | undefined) => Boolean(value?.endsWith(" ↳"));
+
+/**
+ * A change that should show at once: a token Herdr does not know yet, any count token, or `$mon` with a new
+ * glyph (a new state, a monitor that appears or goes) or with the ` ↳` marker coming or going (pi starts or
+ * stops working on it). The rest only changes text and waits for the text pace.
+ */
+export function urgentChange(key: string, before: string | null | undefined, after: string | null): boolean {
+	return before === undefined || key !== PANE_TOKEN || glyph(before) !== glyph(after) || onIt(before) !== onIt(after);
+}
+
 /**
  * Keeps pi-monitor's pane tokens in Herdr up to date: `$mon` and the count tokens. Only the pane:
  * two pi sessions in one space would overwrite each other's space token, because Herdr keeps the
- * last value per key. One report per tick carries every changed token. Sends only on change, at most
- * once a second, refreshes the TTL of every shown token, and clears tokens with null when they go.
+ * last value per key. One report per tick carries every changed token. Sends only on change and never
+ * more than once a second. A new glyph or count goes out on the next tick, text-only changes of `$mon`
+ * at most every 5 s (or with the next urgent one). Refreshes the TTL of every shown token, and clears
+ * tokens with null when they go.
  */
 export class HerdrSidebar {
 	private readonly deps: SidebarDeps;
@@ -43,12 +60,17 @@ export class HerdrSidebar {
 		this.deps = deps;
 	}
 
-	/** Monitors changed. Cheap: bursts of changes wait for the next tick. */
+	/**
+	 * Monitors changed. When the last report is a second or more old, look now: an urgent change goes out at once
+	 * instead of on the next tick. Within the second, bursts of changes wait for the next tick.
+	 */
 	update(): void {
-		if (this.stopped || this.timer !== undefined) return;
+		if (this.stopped) return;
 		const wait = this.lastSendAt + MIN_INTERVAL_MS - this.deps.clock.now();
-		if (wait <= 0) void this.tick();
-		else this.schedule(wait);
+		if (wait <= 0 && !this.busy) {
+			this.cancel();
+			void this.tick();
+		} else this.schedule(wait);
 	}
 
 	/** Clear our tokens and stop. Resolves when Herdr answered (or did not). */
@@ -78,9 +100,11 @@ export class HerdrSidebar {
 		const items = this.deps.items();
 		const wanted = this.wanted();
 		const changed = Object.entries(wanted).filter(([key, value]) => this.sent[key] !== value);
+		const urgent = changed.some(([key, value]) => urgentChange(key, this.sent[key], value));
+		const textDue = changed.length > 0 && now - this.lastSendAt >= TEXT_INTERVAL_MS;
 		const shown = Object.entries(wanted).filter(([, value]) => value !== null);
 		const refresh = shown.length > 0 && now - this.sentAt >= REFRESH_MS;
-		if (changed.length || refresh) {
+		if (urgent || textDue || refresh) {
 			// A refresh resends every shown token, because Herdr gives each token its own TTL.
 			const patch = Object.fromEntries(refresh ? [...shown, ...changed] : changed);
 			this.lastSendAt = now;

@@ -1,21 +1,23 @@
 // The Herdr scene of the README recording: the dock story (scripts/dock-story.ts) in the webapp pane, which is
 // the tab on screen, and two more pi sessions in other spaces with a monitor each. The sidebar tokens, toasts and blocked marks
-// come from pi-monitor's real Herdr code (HerdrSidebar, Attention, toastFor) on a virtual clock, with a fake
-// Herdr that writes down what it receives.
+// come from pi-monitor's real Herdr code (HerdrSidebar, Attention, FailureToasts, toastFor) on a virtual clock,
+// with a fake Herdr that writes down what it receives.
 //
 //   0 s    CI #42 starts in webapp. The counts row shows next to the `$mon` row: two monitors run.
 //   1 s    yarn dev starts on probation: `◐2 · ⏳1`.
 //   1.5 s  the Backend Tests pi starts e2e #17. Its ETA bar fills.
-//   5 s    unit tests fail: webapp's row turns red, `✗1 · ◐1 · ⏳1`. pi works on it 5.6–9.5 s.
 //   2.5 s  the site pi starts Deploy #88.
-//   9.2 s  e2e #17 fails: a red toast, and the Backend Tests pane is marked blocked 2 s later.
-//   13 s   CI #42 goes green: `✓ CI #42 green in 6m02s`. No toast: Herdr shows none for the tab you look at.
+//   5 s    unit tests fail: webapp's row turns red, `✗1 · ◐1 · ⏳1`. pi works on it 5.6–9.5 s: `✗ CI #42 test ↳`.
+//          pi sends a toast for the failed job, but Herdr shows none for the tab you look at.
+//   6.8 s  e2e #17's checkout job fails while payments still runs: a red toast right away.
+//   9.2 s  e2e #17 ends as failed: no second toast. The Backend Tests pane is marked blocked 2 s later.
+//   13 s   CI #42 goes green: `✓ CI #42 6m02s`. No toast: Herdr shows none for the tab you look at.
 //   13.2 s Deploy #88 goes green, with a toast. yarn dev is stopped at 13.5 s.
 //   17 s   the user answers the Backend Tests pi: the blocked mark goes, that pi works until it reruns e2e.
 //   23.5 s the finished rows are gone, the counts row too. The loop starts again.
 import type { Clock } from "../src/delivery.ts";
 import { Attention } from "../src/herdr/attention.ts";
-import { toastFor } from "../src/herdr/integration.ts";
+import { failingToastFor, FailureToasts, toastFor } from "../src/herdr/integration.ts";
 import { HerdrSidebar } from "../src/herdr/sidebar.ts";
 import type { Job } from "../src/sources/types.ts";
 import type { DockItem } from "../src/ui/dock.ts";
@@ -47,14 +49,16 @@ interface Session {
 
 const s = (seconds: number) => T0 + seconds * 1000;
 
-/** e2e #17 in the Backend Tests pane: starts at 1.5 s, fails at 9.2 s, lingers for the dock's 10 s. */
+/** e2e #17 in the Backend Tests pane: starts at 1.5 s, its checkout job fails at 6.8 s, the run fails at 9.2 s. */
 export const E2E_START = 1.5;
+export const E2E_JOB_FAIL = 6.8;
 export const E2E_FAIL = 9.2;
 
 function e2e(t: number, now: number): DockItem | undefined {
 	if (t < E2E_START) return undefined;
 	const job = (name: string, state: Job["state"]): Job => ({ name, state });
 	const failed = t >= E2E_FAIL;
+	const jobFailed = t >= E2E_JOB_FAIL;
 	// A fast clock again, so the bar fills: 2m10s when it shows up, 5m at the failure.
 	const elapsed = (130 + ((Math.min(t, E2E_FAIL) - E2E_START) * 170) / (E2E_FAIL - E2E_START)) * 1000;
 	return {
@@ -72,13 +76,14 @@ function e2e(t: number, now: number): DockItem | undefined {
 			jobs: [
 				job("setup", "success"),
 				job("api", "success"),
-				job("checkout", failed ? "failure" : "running"),
-				job("payments", "queued"),
+				job("checkout", jobFailed ? "failure" : "running"),
+				job("payments", failed ? "success" : jobFailed ? "running" : "queued"),
 			],
 			etaMs: 360_000,
 			startedAt: Math.min(now, s(E2E_FAIL)) - elapsed,
 		},
-		...(failed ? { endedAt: s(E2E_FAIL), summary: "checkout failed" } : {}),
+		...(jobFailed ? { failingSince: s(E2E_JOB_FAIL) } : {}),
+		...(failed ? { endedAt: s(E2E_FAIL), summary: "e2e #17 failure after 5m: checkout" } : {}),
 	};
 }
 
@@ -196,6 +201,11 @@ export class VirtualClock implements Clock {
 	}
 }
 
+/** What makes the registry report a change for a monitor: its state, jobs or handling. */
+function signature(i: DockItem): string {
+	return JSON.stringify([i.status, i.handling, i.paused, i.probationUntil, i.progress.jobs?.map((j) => j.state)]);
+}
+
 /** Let promise chains (the sidebar's report) finish. */
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -252,6 +262,8 @@ export async function simulate(): Promise<Timeline> {
 			session,
 			sidebar,
 			attention,
+			failures: new FailureToasts(),
+			state: { seen: new Map<string, string>(), started: false },
 			set: (next: DockItem[]) => (items = next),
 			get: () => items,
 		};
@@ -261,21 +273,35 @@ export async function simulate(): Promise<Timeline> {
 		const loop = Math.floor(ms / LOOP_MS) * LOOP_MS;
 		const t = ms - loop;
 		// New monitor states first, then the sidebar timers that are due now: a change that lands on a tick shows.
-		for (const { session, sidebar, attention, set, get } of live) {
+		for (const { session, attention, failures, set, get } of live) {
 			const before = new Map(get().map((i) => [i.id, i.status]));
 			const items = set(session.monitors(t).map((i) => shiftItem(i, loop)));
+			// What HerdrIntegration.changed does: one toast when a running run first gets a failed job.
+			for (const item of failures.due(items))
+				timeline.toasts.push({ pane: session.pane, at: ms, status: "failure", ...failingToastFor(item, session.cwd) });
 			for (const item of items) {
 				// What the extension does when the registry reports an end (UiController.ended, HerdrIntegration.ended).
 				if (before.get(item.id) !== "running" || item.status === "running" || item.probationUntil !== undefined)
 					continue;
-				if (item.status === "success" || item.status === "failure" || item.status === "timeout")
-					timeline.toasts.push({ pane: session.pane, at: ms, status: item.status, ...toastFor(item, session.cwd) });
+				const status = item.status;
+				if ((status === "success" || status === "failure" || status === "timeout") && !failures.covers(item))
+					timeline.toasts.push({ pane: session.pane, at: ms, status, ...toastFor(item, session.cwd) });
 				if (item.status === "failure" || item.status === "timeout") attention.failed(item);
 			}
 			if (session.input.some((at) => at * 1000 === t)) attention.clearAll();
-			if (ms >= session.phaseMs) sidebar.update();
 		}
 		await clock.advanceTo(T0 + ms);
+		await settle();
+		// The registry calls update() when a monitor starts or changes, not on every step, and not when a finished
+		// row leaves the dock: the sidebar's own tick sees that. The first call, at `phaseMs`, sets the phase.
+		for (const { session, sidebar, get, state } of live) {
+			const next = new Map(get().map((i) => [i.id, signature(i)]));
+			const changed = [...next].some(([id, sig]) => state.seen.get(id) !== sig);
+			if (ms < session.phaseMs || (!changed && state.started)) continue;
+			state.seen = next;
+			state.started = true;
+			sidebar.update();
+		}
 		await settle();
 	}
 	return timeline;
@@ -300,9 +326,10 @@ export function sceneAt(timeline: Timeline, ms: number): Scene {
 	ms += LOOP_MS;
 	const agents = SESSIONS.map((session): AgentScene => {
 		const tokens: Record<string, string | null> = {};
-		for (const r of timeline.reports) if (r.pane === session.pane && r.at <= ms) Object.assign(tokens, r.tokens);
+		// Herdr draws what it got before this frame: a report that lands on the frame shows in the next one.
+		for (const r of timeline.reports) if (r.pane === session.pane && r.at < ms) Object.assign(tokens, r.tokens);
 		const marks = timeline.blocked
-			.filter((b) => b.pane === session.pane && b.at <= ms)
+			.filter((b) => b.pane === session.pane && b.at < ms)
 			.reduce((sum, b) => sum + b.delta, 0);
 		return { pane: session.pane, state: marks > 0 ? "blocked" : session.state(t / 1000), tokens };
 	});

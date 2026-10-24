@@ -153,7 +153,7 @@ Things to know:
 ## Herdr
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/jordyvanvorselen/pi-monitor/main/docs/herdr.gif" alt="Herdr with pi-monitor rows in its sidebar. Under the webapp pi agent, the monitor row shows CI #42 running with an ETA bar and a counts row of two running and one waiting. The test job fails and the row turns red with a failure count, while the dock in the pi pane shows the same run. In the Backend Tests space, e2e #17 fails with a red toast and the agent is marked blocked. CI #42 goes green, Deploy #88 in the site space goes green with a toast, and the finished rows and the counts row disappear." width="100%">
+  <img src="https://raw.githubusercontent.com/jordyvanvorselen/pi-monitor/main/docs/herdr.gif" alt="Herdr with pi-monitor rows in its sidebar. Under the webapp pi agent, the monitor row shows CI #42 running with an ETA bar and a counts row of two running and one waiting. The test job fails and the row turns red with a failure count and an arrow while pi works on it, and the dock in the pi pane shows the same run. In the Backend Tests space, the checkout job of e2e #17 fails while the run goes on: a red toast right away, and the agent is marked blocked once the run ends. CI #42 goes green, Deploy #88 in the site space goes green with a toast, and the finished rows disappear." width="100%">
 </p>
 
 <p align="center"><sub>Herdr's sidebar with pi-monitor's rows next to the dock, from the same story.</sub></p>
@@ -164,17 +164,19 @@ When pi runs inside [Herdr](https://herdr.dev), pi-monitor can show your monitor
  agents
  ● pi-monitor
    pi
-   ✗ e2e #17 checkout fa…   ← $mon, red
+   ✗ e2e #17 checkout ↳     ← $mon, red
    ✗1 · ◐2 · ⏳1             ← counts: red, gold, gold
 ```
 
-- **One line under the pi pane:** the most important monitor. Failures first, then running GitHub runs, then a run that just went green, then other monitors. For example `◐ CI #42 ▰▰▰▱▱ 3/5 · 4m`, `✗ CI #42 test failed`, `✓ CI #42 green in 6m02s` (for 10 seconds, like the dock) or `⏳ yarn dev`.
+- **One line under the pi pane:** the most important monitor. Failures first, then running GitHub runs, then a run that just went green, then other monitors. For example `◐ CI #42 ▰▰▰▱▱ 3/5 4m`, `✗ CI #42 test` (the failed job), `✓ Deploy #88 2m40s` (for 10 seconds, like the dock), `✗ tests code 1`, `◔ build timed out` or `⏳ yarn dev`.
+- **Fits the sidebar:** the line aims at 22 columns, which is what Herdr's default 26-column sidebar has room for. The glyph always comes first. A long name is cut first, down to 8 columns. Then the clock goes, then the ETA bar, then the job counts. Clocks read like the dock's: `4m`, `2h14m`.
+- **pi is on it:** while pi works on a message from that monitor, the line ends in ` ↳`, like the dock's `pi is on it ↳`.
 - **Counts row:** with two or more monitors on screen, a second line counts them per state: `✗` failed (including timeouts), `◐` running, `⏳` waiting (a bash command that may still end on its own, or a run waiting for a runner) and `✓` just finished green. Each count has its own colour, states with zero are left out, and with one monitor the line disappears. Herdr puts `·` between the counts; the separator cannot be changed.
-- **ETA bar:** a running GitHub run with an ETA (the dock's estimate, the median of the last ten green runs) gets a five-cell bar. Cells fill as whole cells, and the last one waits for the end. Without an ETA there is no bar. Long names are shortened first, so the glyph, bar and counts stay visible within Herdr's 80 characters. The sidebar may still cut the end at its own width.
+- **ETA bar:** a running GitHub run with an ETA (the dock's estimate, the median of the last ten green runs) gets a five-cell bar. Cells fill as whole cells, and the last one waits for the end. Without an ETA there is no bar.
 - **Per pane only:** each pi session shows its own monitors under its own pane. The space rows stay as they are, so two pi sessions in one space never overwrite each other.
 - **Colours:** gold while running, red for failures, green for success. They come from your Pi theme when you set it up.
 
-The sidebar updates at most once a second and only when the text changes. Clocks show whole minutes, so an idle run does not redraw every second.
+The sidebar updates at most once a second and only when something changes. A new state (the glyph), a count or the ` ↳` mark goes out on the next second. Changes that only touch the text, like the clock, the ETA bar or the job counts, wait until 5 seconds after the last update. Clocks show whole minutes. Each update makes Herdr redraw its sidebar for every client, so fewer updates keep Herdr over SSH light.
 
 ### Set it up
 
@@ -183,6 +185,7 @@ Run `/monitors herdr`. It:
 1. Sets `"herdr": "on"` in the `"monitor"` section of `~/.pi/agent/settings.json`.
 2. Adds a `$mon` row and a counts row (`$mon_fail`, `$mon_run`, `$mon_wait`, `$mon_ok`) to the agent rows in Herdr's config, `~/.config/herdr/config.toml` (or `$HERDR_CONFIG_PATH`). Herdr only shows values the config puts in a row, so this step is needed. Your own rows stay. If you have none, Herdr's default rows are written out with the new row below them. If you have rows for pi under `rows_by_agent`, the row goes there.
 3. Lets Herdr check the new config, saves a backup next to it (`config.toml.pi-monitor-<date>-<time>.bak`) and asks Herdr to reload it. If Herdr does not accept it, the old file comes back.
+4. Asks whether to mark pi as blocked in Herdr when a monitor fails (the [blocked mark](#blocked-mark)) and saves your answer as `"herdrAttention"`. It only asks while that setting is not set. If you close the question, nothing is saved and the command says how to turn it on later.
 
 Running it again changes nothing. pi-monitor never touches other parts of the file. The added part looks like this, with a `# pi-monitor` comment above `rows`:
 
@@ -207,16 +210,16 @@ Test builds of this feature also added a `$ci` row to the space rows. `/monitors
 
 ### Notifications
 
-With the integration on, the notification when a monitor ends goes to Herdr as a toast instead of to the terminal. Herdr does not pass terminal notifications from its panes on, so you get one notification, not two or none. A success plays Herdr's "done" sound, a failure or timeout its "request" sound. Herdr shows no toast for the tab you are looking at. `desktopNotifications: false` turns these off too. If Herdr cannot be reached, the terminal notification goes out instead. If you turned toasts off in Herdr (`[ui.toast] delivery = "off"`), `/monitors herdr` tells you and leaves it off.
+With the integration on, the notification when a monitor ends goes to Herdr as a toast instead of to the terminal. A GitHub run also gets a toast the moment its first job fails, while the other jobs still run: `✗ CI #42 test failed`, from `pi · webapp · still running`. That happens once per run attempt, so a rerun that fails again toasts again. When that run then ends as failed, there is no second toast: it would say nothing new. A timeout still gets its own toast. Herdr does not pass terminal notifications from its panes on, so you get one notification, not two or none. A success plays Herdr's "done" sound, a failure or timeout its "request" sound. Herdr shows no toast for the tab you are looking at. `desktopNotifications: false` turns these off too. If Herdr cannot be reached, the terminal notification goes out instead. If you turned toasts off in Herdr (`[ui.toast] delivery = "off"`), `/monitors herdr` tells you and leaves it off.
 
 ### Blocked mark
 
-Set `"herdrAttention": true` to mark the pi pane as blocked in Herdr when a monitor fails or times out and pi does not pick it up within 2 seconds, for example a monitor with `wake: "never"`. The label says `CI #42 failed`. The mark goes away when pi handles the message, a monitor with the same name starts again, you type a message, or the session ends. It needs Herdr's pi integration (`herdr integration install pi`), which listens for these marks.
+`/monitors herdr` asks about this once. You can also set `"herdrAttention": true` yourself to mark the pi pane as blocked in Herdr when a monitor fails or times out and pi does not pick it up within 2 seconds, for example a monitor with `wake: "never"`. The label says `CI #42 failed`. The mark goes away when pi handles the message, a monitor with the same name starts again, you type a message, or the session ends. It needs Herdr's pi integration (`herdr integration install pi`), which listens for these marks.
 
 ### Limits
 
 - One line per pi pane: no row per monitor and no job track. The ETA bar is text in that line. Herdr 0.9.3 reads the terminal progress sequence (OSC 9;4) only to detect agent states and does not draw it, so pi-monitor does not send one.
-- Herdr cuts long values at the sidebar width (26 columns by default), so the end of the `$mon` line, often the clock, can fall off. The counts row fits easily.
+- Herdr cuts long values at the sidebar width with `…`. The `$mon` line aims at the default 26-column sidebar, so in a narrower sidebar its end can still fall off. The counts row fits easily.
 - Errors talking to Herdr never reach pi or the dock. They go to `<tmp>/pi-monitor/herdr.log`, and pi-monitor waits longer after each failure (up to a minute) before it tries again.
 
 ## Sessions and logs

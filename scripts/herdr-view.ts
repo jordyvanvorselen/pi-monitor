@@ -13,8 +13,15 @@ import { TOAST_MS, type AgentState, type Scene } from "./herdr-story.ts";
 
 export const COLS = 110;
 export const ROWS = 26;
-/** Sidebar columns, without the divider. */
-export const SIDEBAR = 32;
+/**
+ * Sidebar columns, without the divider: Herdr's default `sidebar_width = 26` is 25 columns plus the divider.
+ * Agent sub-rows start at column 3, so `$mon` gets 22 columns up to the divider, like in a live Herdr 0.9.3.
+ */
+export const SIDEBAR = 25;
+/** Where text starts in the sidebar, after the state icon at column 1. */
+const TEXT_X = 3;
+/** Columns for `$mon` and the counts row: from TEXT_X up to the divider. */
+export const TOKEN_COLUMNS = SIDEBAR - TEXT_X;
 const PANE_X = SIDEBAR + 1;
 const PANE_W = COLS - PANE_X;
 
@@ -165,9 +172,9 @@ function monColor(value: string, palette: HerdrPalette): Rgb {
 }
 
 function drawSidebar(grid: Grid, scene: Scene, palette: HerdrPalette): void {
-	const right = SIDEBAR - 2;
+	const right = SIDEBAR - 1;
 	for (let y = 0; y < ROWS; y++) put(grid, SIDEBAR, y, "│", mix(rowBackground(y), C.surface, 0.8));
-	put(grid, 2, 0, "spaces", C.overlay, { bold: true });
+	put(grid, 1, 0, "spaces", C.overlay, { bold: true });
 
 	const agent = (pane: string) => scene.agents.find((a) => a.pane === pane);
 	SPACES.forEach((space, i) => {
@@ -177,17 +184,17 @@ function drawSidebar(grid: Grid, scene: Scene, palette: HerdrPalette): void {
 		const states = space.panes.map((p) => agent(p)?.state ?? "idle");
 		const top = states.sort((a, b) => URGENCY[b] - URGENCY[a])[0];
 		const [icon, color] = stateIcon(top ?? "none");
-		put(grid, 2, y, icon, color);
-		put(grid, 4, y, space.name, selected ? C.text : C.subtext, { bold: selected, max: right - 4 });
-		const x = put(grid, 4, y + 1, space.branch, selected ? C.mauve : C.overlay, { max: right - 4 });
+		put(grid, 1, y, icon, color);
+		put(grid, TEXT_X, y, space.name, selected ? C.text : C.subtext, { bold: selected, max: right - TEXT_X });
+		const x = put(grid, TEXT_X, y + 1, space.branch, selected ? C.mauve : C.overlay, { max: right - TEXT_X });
 		if (space.git) put(grid, x + 1, y + 1, space.git, C.pink);
 	});
 
-	put(grid, 2, 9, "new", C.overlay);
+	put(grid, 1, 9, "new", C.overlay);
 	put(grid, right - 5, 9, "●", C.mauve);
 	put(grid, right - 3, 9, "menu", C.overlay);
 	put(grid, 1, 10, "─".repeat(right), mix(rowBackground(10), C.surface, 0.9));
-	put(grid, 2, 11, "agents", C.overlay, { bold: true });
+	put(grid, 1, 11, "agents", C.overlay, { bold: true });
 	put(grid, right - 6, 11, "grouped", C.overlay, { bold: true });
 
 	// Herdr's default agent rows, then pi-monitor's: `$mon` and the counts row. Empty rows are left out.
@@ -198,18 +205,18 @@ function drawSidebar(grid: Grid, scene: Scene, palette: HerdrPalette): void {
 			const a = agent(pane);
 			if (!a || y >= ROWS - 1) continue;
 			const [icon, color] = stateIcon(a.state);
-			put(grid, 2, y, icon, color);
-			const x = put(grid, 4, y, space.name, C.text, { max: right - 4 });
+			put(grid, 1, y, icon, color);
+			const x = put(grid, TEXT_X, y, space.name, C.text, { max: right - TEXT_X });
 			put(grid, x, y, " · 1", C.overlay, { max: right - x + 1 });
-			put(grid, 4, ++y, "pi", C.overlay);
+			put(grid, TEXT_X, ++y, "pi", C.overlay);
 			const mon = a.tokens[PANE_TOKEN];
-			if (mon) put(grid, 4, ++y, mon, monColor(mon, palette), { max: right - 3, ellipsis: true });
+			if (mon) put(grid, TEXT_X, ++y, mon, monColor(mon, palette), { max: TOKEN_COLUMNS, ellipsis: true });
 			const parts = counts
 				.map((c) => ({ value: a.tokens[c.token.slice(1)], fg: hex(c.fg) }))
 				.filter((p): p is { value: string; fg: Rgb } => !!p.value);
 			if (parts.length) {
 				y++;
-				let x = 4;
+				let x = TEXT_X;
 				parts.forEach((p, k) => {
 					if (k) x = put(grid, x, y, " · ", C.overlay);
 					x = put(grid, x, y, p.value, p.fg);
