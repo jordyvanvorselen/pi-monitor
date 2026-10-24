@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Attention, BLOCKED_EVENT, GRACE_MS } from "../src/herdr/attention.ts";
 import { HerdrSidebar, MIN_INTERVAL_MS, REFRESH_MS, SOURCE, TTL_MS } from "../src/herdr/sidebar.ts";
-import { capChars, MAX_TOKEN_CHARS, paneToken } from "../src/herdr/tokens.ts";
+import { capChars, etaCells, MAX_TOKEN_CHARS, paneToken } from "../src/herdr/tokens.ts";
 import type { Job } from "../src/sources/types.ts";
 import type { DockItem } from "../src/ui/dock.ts";
 import { FakeClock } from "./helpers.ts";
@@ -89,12 +89,49 @@ describe("Herdr tokens", () => {
 		assert.equal(paneToken([{ ...devServer, paused: true }], NOW), "‖ dev server paused");
 	});
 
-	it("stays within Herdr's 80 characters and keeps the +N count", () => {
-		const long = { ...ci, progress: { title: "x".repeat(120), jobs } };
+	it("stays within Herdr's 80 characters by cutting the name, keeping the glyph, bar, counts and +N", () => {
+		const long = { ...ci, progress: { title: "x".repeat(120), jobs, etaMs: 500_000 } };
 		const token = paneToken([long, devServer], NOW)!;
 		assert.equal(Array.from(token).length, MAX_TOKEN_CHARS);
-		assert.match(token, /…\s\+1$/);
+		assert.match(token, /^◐ x+… ▰▰▱▱▱ 3\/5 · 4m \+1$/);
 		assert.equal(capChars("✓".repeat(81), 80).length, 80);
+		const failedLong = { ...failing, progress: { ...failing.progress, title: "y".repeat(120) } };
+		assert.match(paneToken([failedLong], NOW)!, /^✗ y+…$/, "other states are cut at the end and keep their glyph");
+	});
+
+	it("draws a 5-cell ETA bar from the dock's estimate for GitHub runs: ◐ CI #42 ▰▰▱▱▱ 3/5 · 4m", () => {
+		const withEta = (etaMs: number) => ({ ...ci, progress: { ...ci.progress, etaMs } });
+		assert.equal(paneToken([withEta(500_000)], NOW), "◐ CI #42 ▰▰▱▱▱ 3/5 · 4m", "250 s of ~500 s: two cells");
+		assert.equal(paneToken([withEta(1_000_000)], NOW), "◐ CI #42 ▰▱▱▱▱ 3/5 · 4m");
+		assert.equal(etaCells(0, 600_000), "▱▱▱▱▱");
+		assert.equal(etaCells(599_000, 600_000), "▰▰▰▰▱");
+	});
+
+	it("never fills the last cell while the run is still going, also past the ETA", () => {
+		const late = { ...ci, progress: { ...ci.progress, etaMs: 100_000 } };
+		assert.equal(paneToken([late], NOW), "◐ CI #42 ▰▰▰▰▱ 3/5 · 4m");
+	});
+
+	it("only changes when a whole cell fills, so the once-a-second throttle stays quiet", () => {
+		const run = { ...ci, progress: { ...ci.progress, etaMs: 500_000 } };
+		assert.equal(paneToken([run], NOW), paneToken([run], NOW + 9_000));
+		assert.notEqual(paneToken([run], NOW), paneToken([run], NOW + 60_000));
+	});
+
+	it("shows no bar without an ETA, for other monitors, and for failure and finish moments", () => {
+		assert.equal(paneToken([ci], NOW), "◐ CI #42 3/5 · 4m");
+		assert.equal(paneToken([{ ...devServer, progress: { etaMs: 60_000 } }], NOW), "◐ dev server · 10m");
+		const failingEta = { ...failing, progress: { ...failing.progress, etaMs: 500_000 } };
+		assert.equal(paneToken([failingEta], NOW), "✗ e2e #17 checkout failed");
+		const green = item({
+			id: "m1",
+			kind: "gh_run",
+			status: "success",
+			progress: { title: "CI #42", etaMs: 500_000 },
+			summary: "CI #42 green in 6m02s",
+			endedAt: NOW - 1_000,
+		});
+		assert.equal(paneToken([green], NOW), "✓ CI #42 green in 6m02s");
 	});
 
 	it("is null without monitors, so the sidebar row disappears", () => {

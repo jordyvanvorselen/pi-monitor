@@ -47,17 +47,41 @@ function elapsed(ms: number): string {
 	return ms < 60_000 ? "" : ` · ${formatShortDuration(ms)}`;
 }
 
-/** One monitor as sidebar text, without colour: `◐ CI #42 3/5 · 4m`, `✗ CI #42 test failed`, `✓ CI #42 green in 6m02s`. */
-export function itemToken(item: DockItem, now: number): string {
-	if (item.status !== "running") return `${GLYPHS[item.status]} ${finishedText(item)}`;
+/** Cells of the ETA bar in the token. */
+export const BAR_CELLS = 5;
+
+/**
+ * Text ETA bar, `▰▰▰▱▱`, from the dock's ETA estimate (median of recent green runs). Cells fill as whole
+ * cells only, so the token changes a few times per run. The last cell waits for the end: a running run is
+ * never shown as full. `▰▱` have a neutral East Asian width, so terminals draw them one column wide.
+ */
+export function etaCells(elapsedMs: number, etaMs: number, cells = BAR_CELLS): string {
+	const filled = Math.max(0, Math.min(cells - 1, Math.floor((elapsedMs / etaMs) * cells)));
+	return "▰".repeat(filled) + "▱".repeat(cells - filled);
+}
+
+/** `glyph name rest`, with the name cut so the whole line fits in `max` characters. The glyph stays first. */
+function fitName(glyph: string, name: string, rest: string, max: number): string {
+	const room = max - Array.from(`${glyph} ${rest}`).length;
+	return `${glyph} ${capChars(name, Math.max(1, room))}${rest}`;
+}
+
+/**
+ * One monitor as sidebar text, without colour: `◐ CI #42 ▰▰▰▱▱ 3/5 · 4m`, `✗ CI #42 test failed`,
+ * `✓ CI #42 green in 6m02s`. At most `max` characters; a long name is cut before the bar and counts are.
+ */
+export function itemToken(item: DockItem, now: number, max = MAX_TOKEN_CHARS): string {
+	if (item.status !== "running") return capChars(`${GLYPHS[item.status]} ${finishedText(item)}`, max);
 	const name = displayName(item);
-	if (item.probationUntil !== undefined) return `${GLYPHS.probation} ${name}`;
-	if (item.paused) return `${GLYPHS.paused} ${name} paused`;
+	if (item.probationUntil !== undefined) return fitName(GLYPHS.probation, name, "", max);
+	if (item.paused) return fitName(GLYPHS.paused, name, " paused", max);
 	const jobs = item.progress.jobs ?? [];
 	const failed = jobs.find((j) => j.state === "failure");
-	if (failed) return `${GLYPHS.failure} ${name} ${failed.name} failed`;
+	if (failed) return capChars(`${GLYPHS.failure} ${name} ${failed.name} failed`, max);
+	const ms = now - (item.progress.startedAt ?? item.startedAt);
+	const eta = isGitHub(item) && item.progress.etaMs ? ` ${etaCells(ms, item.progress.etaMs)}` : "";
 	const counts = jobs.length ? ` ${jobCounts(jobs).done}/${jobs.length}` : "";
-	return `${GLYPHS.running} ${name}${counts}${elapsed(now - (item.progress.startedAt ?? item.startedAt))}`;
+	return fitName(GLYPHS.running, name, `${eta}${counts}${elapsed(ms)}`, max);
 }
 
 /** Cut to `max` characters with `…`, counting code points like Herdr does. */
@@ -73,5 +97,5 @@ export function paneToken(items: readonly DockItem[], now: number): string | nul
 	if (!top) return null;
 	const others = visible.filter((i) => i !== top && i.status === "running").length;
 	const more = others ? ` +${others}` : "";
-	return capChars(itemToken(top, now), MAX_TOKEN_CHARS - more.length) + more;
+	return itemToken(top, now, MAX_TOKEN_CHARS - more.length) + more;
 }

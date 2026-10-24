@@ -158,10 +158,11 @@ When pi runs inside [Herdr](https://herdr.dev), pi-monitor can show your monitor
  agents
  ● pi-monitor
    pi
-   ✗ CI #42 test failed +1  ← $mon, red
+   ◐ CI #42 ▰▰▰▱▱ 3/5 · 4m  ← $mon, gold
 ```
 
-- **One line under the pi pane:** the most important monitor. Failures first, then running GitHub runs, then a run that just went green, then other monitors. For example `◐ CI #42 3/5 · 4m`, `✗ CI #42 test failed`, `✓ CI #42 green in 6m02s` (for 10 seconds, like the dock) or `⏳ yarn dev`. `+2` means two more are running.
+- **One line under the pi pane:** the most important monitor. Failures first, then running GitHub runs, then a run that just went green, then other monitors. For example `◐ CI #42 ▰▰▰▱▱ 3/5 · 4m`, `✗ CI #42 test failed`, `✓ CI #42 green in 6m02s` (for 10 seconds, like the dock) or `⏳ yarn dev`. `+2` means two more are running.
+- **ETA bar:** a running GitHub run with an ETA (the dock's estimate, the median of the last ten green runs) gets a five-cell bar. Cells fill as whole cells, and the last one waits for the end. Without an ETA there is no bar. Long names are shortened first, so the glyph, bar and counts stay visible within Herdr's 80 characters. The sidebar may still cut the end at its own width.
 - **Per pane only:** each pi session shows its own monitors under its own pane. The space rows stay as they are, so two pi sessions in one space never overwrite each other.
 - **Colours:** gold while running, red for failures, green for success. They come from your Pi theme when you set it up.
 
@@ -203,7 +204,7 @@ Set `"herdrAttention": true` to mark the pi pane as blocked in Herdr when a moni
 
 ### Limits
 
-- One line per pi pane: no row per monitor, no job track and no progress bar. Herdr 0.9.3 reads the terminal progress sequence (OSC 9;4) only to detect agent states and does not draw it, so pi-monitor does not send one.
+- One line per pi pane: no row per monitor and no job track. The ETA bar is text in that line. Herdr 0.9.3 reads the terminal progress sequence (OSC 9;4) only to detect agent states and does not draw it, so pi-monitor does not send one.
 - Herdr cuts long values at the sidebar width. The `+2` count can fall off on a narrow sidebar.
 - Errors talking to Herdr never reach pi or the dock. They go to `<tmp>/pi-monitor/herdr.log`, and pi-monitor waits longer after each failure (up to a minute) before it tries again.
 
