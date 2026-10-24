@@ -24,7 +24,7 @@ import { HerdrSidebar } from "./sidebar.ts";
 import { capChars, GLYPHS, PANE_TOKEN } from "./tokens.ts";
 
 export const STARTUP_NOTE =
-	"Herdr detected. Show monitors in the Herdr sidebar: /monitors herdr. Hide this note: /monitors herdr off";
+	"pi-monitor: Herdr detected. Show monitors in the Herdr sidebar with /monitors herdr, or hide this note with /monitors herdr off.";
 
 export const HERDR_USAGE = "Usage: /monitors herdr [off|status]";
 
@@ -89,7 +89,9 @@ export class HerdrIntegration {
 		if (this.noteShown || event.reason !== "startup") return;
 		if (!this.target || !this.tui || this.deps.settings().herdr !== undefined) return;
 		this.noteShown = true;
-		ui.notify(STARTUP_NOTE, "info");
+		// A warning, like other extensions' startup notes: pi draws it in yellow with "Warning: " in front.
+		// An info line is dim grey and easy to miss among the startup output.
+		ui.notify(STARTUP_NOTE, "warning");
 	}
 
 	/** Monitors changed. */

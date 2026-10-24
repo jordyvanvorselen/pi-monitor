@@ -192,7 +192,7 @@ Test builds of this feature also added a `$ci` row to the space rows. `/monitors
 
 - `/monitors herdr off` stops sending anything to Herdr, clears the sidebar values and hides the startup note. The `$mon` row stays in Herdr's config and shows nothing. To remove it, delete that row.
 - `/monitors herdr status` shows whether pi runs in Herdr, the setting and whether the config has the row.
-- Until you run one of these, pi shows a one-line note at startup inside Herdr: `Herdr detected. Show monitors in the Herdr sidebar: /monitors herdr. Hide this note: /monitors herdr off`.
+- Until you run one of these, pi shows a yellow note at startup inside Herdr: `Warning: pi-monitor: Herdr detected. Show monitors in the Herdr sidebar with /monitors herdr, or hide this note with /monitors herdr off.`.
 
 ### Notifications
 

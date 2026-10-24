@@ -113,7 +113,7 @@ describe("Herdr startup note", () => {
 		const { h, stub, server } = await setup();
 		await h.fire("session_start", { reason: "startup" });
 		await h.fire("session_start", { reason: "startup" });
-		assert.deepEqual(stub.notes, [{ text: STARTUP_NOTE, type: "info" }]);
+		assert.deepEqual(stub.notes, [{ text: STARTUP_NOTE, type: "warning" }], "yellow, so it is not missed");
 		assert.match(STARTUP_NOTE, /\/monitors herdr off/);
 		await h.fire("session_shutdown", { reason: "quit" });
 		await server.close();
