@@ -152,22 +152,17 @@ Things to know:
 
 ## Herdr
 
-When pi runs inside [Herdr](https://herdr.dev), pi-monitor can show your monitors in the Herdr sidebar, so you see CI from any tab.
+When pi runs inside [Herdr](https://herdr.dev), pi-monitor can show your monitors in the agents section of the Herdr sidebar, so you see CI from any tab.
 
 ```
- spaces
- ● pi-monitor
-   feat/checkout
-   ✗ CI                     ← $ci, red
- ⋮
  agents
  ● pi-monitor
    pi
    ✗ CI #42 test failed +1  ← $mon, red
 ```
 
-- **Agent row of the pi pane:** the most important monitor. Failures first, then running GitHub runs, then a run that just went green, then other monitors. For example `◐ CI #42 3/5 · 4m`, `✗ CI #42 test failed`, `✓ CI #42 green in 6m02s` (for 10 seconds, like the dock) or `⏳ yarn dev`. `+2` means two more are running.
-- **Space row:** `◐ CI`, `✗ CI` or `✓ CI` while the session watches GitHub runs.
+- **One line under the pi pane:** the most important monitor. Failures first, then running GitHub runs, then a run that just went green, then other monitors. For example `◐ CI #42 3/5 · 4m`, `✗ CI #42 test failed`, `✓ CI #42 green in 6m02s` (for 10 seconds, like the dock) or `⏳ yarn dev`. `+2` means two more are running.
+- **Per pane only:** each pi session shows its own monitors under its own pane. The space rows stay as they are, so two pi sessions in one space never overwrite each other.
 - **Colours:** gold while running, red for failures, green for success. They come from your Pi theme when you set it up.
 
 The sidebar updates at most once a second and only when the text changes. Clocks show whole minutes, so an idle run does not redraw every second.
@@ -177,31 +172,25 @@ The sidebar updates at most once a second and only when the text changes. Clocks
 Run `/monitors herdr`. It:
 
 1. Sets `"herdr": "on"` in the `"monitor"` section of `~/.pi/agent/settings.json`.
-2. Adds a `$mon` row to the agent rows and a `$ci` row to the space rows in Herdr's config, `~/.config/herdr/config.toml` (or `$HERDR_CONFIG_PATH`). Herdr only shows values the config puts in a row, so this step is needed. Your own rows stay. If you have none, Herdr's default rows are written out with the new row below them. If you have rows for pi under `rows_by_agent`, the row goes there.
+2. Adds a `$mon` row to the agent rows in Herdr's config, `~/.config/herdr/config.toml` (or `$HERDR_CONFIG_PATH`). Herdr only shows values the config puts in a row, so this step is needed. Your own rows stay. If you have none, Herdr's default rows are written out with the new row below them. If you have rows for pi under `rows_by_agent`, the row goes there.
 3. Lets Herdr check the new config, saves a backup next to it (`config.toml.pi-monitor-<date>-<time>.bak`) and asks Herdr to reload it. If Herdr does not accept it, the old file comes back.
 
-Running it again changes nothing. pi-monitor never touches other parts of the file. The added part looks like this, with a `# pi-monitor` comment above each `rows`:
+Running it again changes nothing. pi-monitor never touches other parts of the file. The added part looks like this, with a `# pi-monitor` comment above `rows`:
 
 ```toml
 [ui.sidebar.agents]
-# pi-monitor: monitor rows, added by /monitors herdr. Remove the $mon and $ci rows to undo.
+# pi-monitor: monitor row, added by /monitors herdr. Remove the $mon row to undo.
 rows = [
   ["state_icon", "machine", "workspace", "tab"],
   ["agent"],
   [{ token = "$mon", rules = [{ starts_with = "✗", fg = "#FF5F6D" }, { starts_with = "✓", fg = "#3CF2C8" }, { starts_with = "◐", fg = "#FFD66B" }, …] }],
 ]
-
-[ui.sidebar.spaces]
-# pi-monitor: monitor rows, added by /monitors herdr. Remove the $mon and $ci rows to undo.
-rows = [
-  ["state_icon", "workspace"],
-  ["branch", "git_status"],
-  [{ token = "$ci", rules = [ … ] }],
-]
 ```
 
-- `/monitors herdr off` stops sending anything to Herdr, clears the sidebar values and hides the startup note. The rows stay in Herdr's config and show nothing. To remove them, delete the `$mon` and `$ci` rows.
-- `/monitors herdr status` shows whether pi runs in Herdr, the setting and whether the config has the rows.
+Test builds of this feature also added a `$ci` row to the space rows. `/monitors herdr` takes that row out again.
+
+- `/monitors herdr off` stops sending anything to Herdr, clears the sidebar values and hides the startup note. The `$mon` row stays in Herdr's config and shows nothing. To remove it, delete that row.
+- `/monitors herdr status` shows whether pi runs in Herdr, the setting and whether the config has the row.
 - Until you run one of these, pi shows a one-line note at startup inside Herdr: `Herdr detected. Show monitors in the Herdr sidebar: /monitors herdr. Hide this note: /monitors herdr off`.
 
 ### Notifications
@@ -214,9 +203,8 @@ Set `"herdrAttention": true` to mark the pi pane as blocked in Herdr when a moni
 
 ### Limits
 
-- One line per pane and one per space: no row per monitor, no job track and no progress bar in the sidebar.
+- One line per pi pane: no row per monitor, no job track and no progress bar. Herdr 0.9.3 reads the terminal progress sequence (OSC 9;4) only to detect agent states and does not draw it, so pi-monitor does not send one.
 - Herdr cuts long values at the sidebar width. The `+2` count can fall off on a narrow sidebar.
-- Two pi sessions in the same space share the `$ci` value. The last one to report wins.
 - Errors talking to Herdr never reach pi or the dock. They go to `<tmp>/pi-monitor/herdr.log`, and pi-monitor waits longer after each failure (up to a minute) before it tries again.
 
 ## Sessions and logs

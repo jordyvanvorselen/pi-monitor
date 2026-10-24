@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Attention, BLOCKED_EVENT, GRACE_MS } from "../src/herdr/attention.ts";
 import { HerdrSidebar, MIN_INTERVAL_MS, REFRESH_MS, SOURCE, TTL_MS } from "../src/herdr/sidebar.ts";
-import { capChars, MAX_TOKEN_CHARS, paneToken, spaceToken } from "../src/herdr/tokens.ts";
+import { capChars, MAX_TOKEN_CHARS, paneToken } from "../src/herdr/tokens.ts";
 import type { Job } from "../src/sources/types.ts";
 import type { DockItem } from "../src/ui/dock.ts";
 import { FakeClock } from "./helpers.ts";
@@ -100,14 +100,6 @@ describe("Herdr tokens", () => {
 	it("is null without monitors, so the sidebar row disappears", () => {
 		assert.equal(paneToken([], NOW), null);
 	});
-
-	it("rolls GitHub runs up into a short space token and ignores other monitors", () => {
-		assert.equal(spaceToken([ci, devServer], NOW), "◐ CI");
-		assert.equal(spaceToken([ci, failing], NOW), "✗ CI");
-		const green = item({ id: "m1", kind: "gh_pr", status: "success", endedAt: NOW - 1_000 });
-		assert.equal(spaceToken([green], NOW), "✓ CI");
-		assert.equal(spaceToken([devServer], NOW), null);
-	});
 });
 
 function sidebarSetup(items: DockItem[], options: { fail?: boolean } = {}) {
@@ -120,7 +112,6 @@ function sidebarSetup(items: DockItem[], options: { fail?: boolean } = {}) {
 			return state.fail ? undefined : { result: { type: "ok" } };
 		},
 		paneId: "w1:p1",
-		workspaceId: "w1",
 		items: () => items,
 		clock,
 	});
@@ -134,7 +125,7 @@ function sidebarSetup(items: DockItem[], options: { fail?: boolean } = {}) {
 }
 
 describe("Herdr sidebar sync", () => {
-	it("reports the pane and space tokens with one fixed source and a TTL", async () => {
+	it("reports only the pane token, with one fixed source and a TTL", async () => {
 		const { sidebar, settle, requests } = sidebarSetup([ci]);
 		sidebar.update();
 		await settle();
@@ -142,10 +133,6 @@ describe("Herdr sidebar sync", () => {
 			{
 				method: "pane.report_metadata",
 				params: { pane_id: "w1:p1", source: SOURCE, tokens: { mon: "◐ CI #42 3/5 · 4m" }, ttl_ms: TTL_MS },
-			},
-			{
-				method: "workspace.report_metadata",
-				params: { workspace_id: "w1", source: SOURCE, tokens: { ci: "◐ CI" }, ttl_ms: TTL_MS },
 			},
 		]);
 	});
@@ -155,7 +142,7 @@ describe("Herdr sidebar sync", () => {
 		sidebar.update();
 		await settle();
 		for (let i = 0; i < 10; i++) await step(MIN_INTERVAL_MS);
-		assert.equal(requests.length, 2);
+		assert.equal(requests.length, 1);
 	});
 
 	it("sends at most once a second: a burst of changes becomes one trailing report", async () => {
@@ -186,7 +173,7 @@ describe("Herdr sidebar sync", () => {
 		assert.equal(panes()[1]!.ttl_ms, TTL_MS);
 	});
 
-	it("clears the tokens with null when nothing is left, then stops ticking", async () => {
+	it("clears the token with null when nothing is left, then stops ticking", async () => {
 		const items: DockItem[] = [ci];
 		const { sidebar, settle, step, requests } = sidebarSetup(items);
 		sidebar.update();
@@ -194,11 +181,11 @@ describe("Herdr sidebar sync", () => {
 		items.pop();
 		await step(MIN_INTERVAL_MS);
 		assert.deepEqual(
-			requests.slice(2).map((r) => r.params.tokens),
-			[{ mon: null }, { ci: null }],
+			requests.slice(1).map((r) => r.params.tokens),
+			[{ mon: null }],
 		);
 		assert.ok(
-			requests.slice(2).every((r) => !("ttl_ms" in r.params)),
+			requests.slice(1).every((r) => !("ttl_ms" in r.params)),
 			"a clear has no TTL",
 		);
 		await step(MIN_INTERVAL_MS);
@@ -215,14 +202,14 @@ describe("Herdr sidebar sync", () => {
 		assert.equal(panes().length, 2, "one failed and one good report, then quiet");
 	});
 
-	it("clears its tokens when stopped", async () => {
+	it("clears its token when stopped", async () => {
 		const { sidebar, settle, requests } = sidebarSetup([ci]);
 		sidebar.update();
 		await settle();
 		await sidebar.stop();
 		assert.deepEqual(
-			requests.slice(2).map((r) => r.params.tokens),
-			[{ mon: null }, { ci: null }],
+			requests.slice(1).map((r) => r.params.tokens),
+			[{ mon: null }],
 		);
 		assert.equal(sidebar.ticking, false);
 	});

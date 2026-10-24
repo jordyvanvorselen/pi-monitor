@@ -27,16 +27,35 @@ status_indicators = "dots"
 name = "catppuccin"
 `;
 
+/** What 0.3.0 previews wrote: agent rows plus a $ci space row. */
+const OLD_SETUP = `${USER_CONFIG}
+[ui.sidebar.agents]
+# pi-monitor: monitor rows, added by /monitors herdr. Remove the $mon and $ci rows to undo.
+rows = [
+  ["state_icon", "machine", "workspace", "tab"],
+  ["agent"],
+  [{ token = "$mon", rules = [{ starts_with = "✗", fg = "#FF5F6D" }, { starts_with = "◔", fg = "#FF5F6D" }, { starts_with = "✓", fg = "#3CF2C8" }, { starts_with = "◐", fg = "#FFD66B" }, { starts_with = "⏳", fg = "#FFD66B" }, { starts_with = "‖", fg = "#FFD66B" }] }],
+]
+
+[ui.sidebar.spaces]
+# pi-monitor: monitor rows, added by /monitors herdr. Remove the $mon and $ci rows to undo.
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status"],
+  [{ token = "$ci", rules = [{ starts_with = "✗", fg = "#FF5F6D" }, { starts_with = "◔", fg = "#FF5F6D" }, { starts_with = "✓", fg = "#3CF2C8" }, { starts_with = "◐", fg = "#FFD66B" }] }],
+]
+`;
+
 type Row = (string | { token: string })[];
 const rows = (text: string, ...path: string[]) => {
 	let node: unknown = parse(text);
-	for (const part of path) node = (node as Record<string, unknown>)[part];
+	for (const part of path) node = (node as Record<string, unknown> | undefined)?.[part];
 	return node as Row[];
 };
 const tokens = (list: Row[]) => list.map((row) => row.map((e) => (typeof e === "string" ? e : e.token)));
 
 describe("Herdr config merge", () => {
-	it("adds a $mon agent row and a $ci space row below Herdr's default rows and keeps the rest of the file", () => {
+	it("adds a $mon agent row below Herdr's default rows, leaves the space rows alone and keeps the rest of the file", () => {
 		const { text, changed, toast } = mergeHerdrConfig(USER_CONFIG);
 		assert.equal(changed, true);
 		assert.ok(text.startsWith(USER_CONFIG.trimEnd()), "existing lines stay as they were, comments included");
@@ -45,11 +64,7 @@ describe("Herdr config merge", () => {
 			["agent"],
 			["$mon"],
 		]);
-		assert.deepEqual(tokens(rows(text, "ui", "sidebar", "spaces", "rows")), [
-			["state_icon", "workspace"],
-			["branch", "git_status"],
-			["$ci"],
-		]);
+		assert.equal(rows(text, "ui", "sidebar", "spaces", "rows"), undefined, "monitors show per pane only");
 		assert.equal(toast, "on");
 		assert.equal((parse(text) as { ui: { toast?: unknown } }).ui.toast, undefined, "Herdr shows toasts by default");
 	});
@@ -88,7 +103,7 @@ rows = [["workspace"], ["branch"]]
 			{ ...(rows(text, "ui", "sidebar", "agents", "rows")[1]![0] as object) },
 			{ token: "workspace", fg: "#89b4fa" },
 		);
-		assert.deepEqual(tokens(rows(text, "ui", "sidebar", "spaces", "rows")), [["workspace"], ["branch"], ["$ci"]]);
+		assert.ok(text.includes('[ui.sidebar.spaces]\nrows = [["workspace"], ["branch"]]\n'), "space rows untouched");
 		assert.match(text, /row_gap = 1\n# my layout\n# pi-monitor/);
 		assert.equal((text.match(/\[ui\.sidebar\.agents\]/g) ?? []).length, 1, "no second table");
 	});
@@ -131,19 +146,67 @@ rows = [["workspace"], ["branch"]]
 		}
 	});
 
-	it("adds the rows inside an existing table that has none yet", () => {
-		const { text } = mergeHerdrConfig(`[ui.sidebar.spaces]\nrow_gap = 1\n\n[ui.sidebar.spaces.extra]\nx = 1\n`);
+	it("adds the row inside an existing table that has none yet", () => {
+		const { text } = mergeHerdrConfig(
+			`[ui.sidebar.agents]\nrow_gap = 1\n\n[ui.sidebar.agents.rows_by_agent]\nclaude = [["agent"]]\n`,
+		);
 		const doc = parse(text) as {
-			ui: { sidebar: { spaces: { row_gap: number; rows: unknown[]; extra: { x: number } } } };
+			ui: { sidebar: { agents: { row_gap: number; rows: unknown[]; rows_by_agent: { claude: unknown[] } } } };
 		};
-		assert.equal(doc.ui.sidebar.spaces.row_gap, 1);
-		assert.equal(doc.ui.sidebar.spaces.rows.length, 3);
-		assert.equal(doc.ui.sidebar.spaces.extra.x, 1);
-		assert.equal((text.match(/\[ui\.sidebar\.spaces\]/g) ?? []).length, 1);
+		assert.equal(doc.ui.sidebar.agents.row_gap, 1);
+		assert.equal(doc.ui.sidebar.agents.rows.length, 3);
+		assert.equal(doc.ui.sidebar.agents.rows_by_agent.claude.length, 1);
+		assert.equal((text.match(/\[ui\.sidebar\.agents\]/g) ?? []).length, 1);
+	});
+
+	it("removes the $ci space block an earlier version added, leaving the file as if it was never there", () => {
+		const { text, removedSpaceRow } = mergeHerdrConfig(OLD_SETUP);
+		assert.equal(removedSpaceRow, true);
+		assert.equal(text, mergeHerdrConfig(USER_CONFIG).text);
+		assert.doesNotMatch(text, /\$ci|ui\.sidebar\.spaces/);
+		assert.equal(mergeHerdrConfig(text).changed, false, "idempotent afterwards");
+	});
+
+	it("removes the old space block also when another table follows it", () => {
+		const { text } = mergeHerdrConfig(`${OLD_SETUP}\n[remote]\nx = 1\n`);
+		assert.doesNotMatch(text, /\$ci|ui\.sidebar\.spaces/);
+		assert.match(text, /\]\n\n\[remote\]\nx = 1\n$/);
+	});
+
+	it("takes only the $ci row out of the user's own space rows", () => {
+		const own = `[ui.sidebar.spaces]
+row_gap = 1
+# pi-monitor: monitor rows, added by /monitors herdr. Remove the $mon and $ci rows to undo.
+rows = [
+  ["workspace"],
+  [{ token = "$ci", rules = [{ starts_with = "✗", fg = "#FF5F6D" }] }],
+]
+`;
+		const { text } = mergeHerdrConfig(own);
+		assert.match(text, /\[ui\.sidebar\.spaces\]\nrow_gap = 1\nrows = \[\n {2}\["workspace"\],\n\]\n/);
+		assert.doesNotMatch(text, /\$ci/);
+	});
+
+	it("keeps the space table when it holds other settings", () => {
+		const own = `[ui.sidebar.spaces]
+row_gap = 1
+# pi-monitor: monitor rows, added by /monitors herdr. Remove the $mon and $ci rows to undo.
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status"],
+  [{ token = "$ci" }],
+]
+`;
+		const { text } = mergeHerdrConfig(own);
+		assert.match(text, /^\[ui\.sidebar\.spaces\]\nrow_gap = 1\n/);
+		assert.equal(
+			(parse(text) as { ui: { sidebar: { spaces: { rows?: unknown } } } }).ui.sidebar.spaces.rows,
+			undefined,
+		);
 	});
 
 	it("refuses configs it cannot edit safely and offers the lines to add by hand", () => {
-		assert.throws(() => mergeHerdrConfig('[ui]\nsidebar.spaces.rows = [["workspace"]]\n'), ManualSetupError);
+		assert.throws(() => mergeHerdrConfig('[ui]\nsidebar.agents.rows = [["agent"]]\n'), ManualSetupError);
 		assert.throws(() => mergeHerdrConfig("this is = = not toml"), ManualSetupError);
 		assert.match(manualSnippet(), /\$mon/);
 		assert.ok(parse(manualSnippet()));

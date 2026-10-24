@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parse } from "smol-toml";
-import { GLYPHS, PANE_TOKEN, SPACE_TOKEN } from "./tokens.ts";
+import { GLYPHS, PANE_TOKEN } from "./tokens.ts";
 
 /** Rule colours, as `#RRGGBB`. */
 export interface HerdrPalette {
@@ -13,7 +13,7 @@ export interface HerdrPalette {
 /** The launch video palette: teal, red and gold. */
 export const DEFAULT_PALETTE: HerdrPalette = { ok: "#3CF2C8", failed: "#FF5F6D", running: "#FFD66B" };
 
-/** Herdr's built-in layouts, used when the config has none. */
+/** Herdr's built-in layouts. Agent rows are written out when the config has none. */
 export const DEFAULT_AGENT_ROWS: Rows = [["state_icon", "machine", "workspace", "tab"], ["agent"]];
 export const DEFAULT_SPACE_ROWS: Rows = [
 	["state_icon", "workspace"],
@@ -22,7 +22,9 @@ export const DEFAULT_SPACE_ROWS: Rows = [
 
 /** Every line pi-monitor writes has this comment right above it. */
 export const MARKER = "# pi-monitor";
-const ROWS_COMMENT = `${MARKER}: monitor rows, added by /monitors herdr. Remove the $${PANE_TOKEN} and $${SPACE_TOKEN} rows to undo.`;
+const ROWS_COMMENT = `${MARKER}: monitor row, added by /monitors herdr. Remove the $${PANE_TOKEN} row to undo.`;
+/** pi-monitor 0.3.0 previews also put a `$ci` row in the space rows. Setup takes it out again. */
+export const OLD_SPACE_TOKEN = "$ci";
 
 type Entry = string | { token: string; [key: string]: unknown };
 type Rows = Entry[][];
@@ -43,10 +45,6 @@ function rules(palette: HerdrPalette) {
 
 export function monitorRow(palette: HerdrPalette): Entry[] {
 	return [{ token: `$${PANE_TOKEN}`, rules: rules(palette) }];
-}
-
-export function ciRow(palette: HerdrPalette): Entry[] {
-	return [{ token: `$${SPACE_TOKEN}`, rules: rules(palette).slice(0, 4) }];
 }
 
 const tokenOf = (entry: unknown) =>
@@ -148,6 +146,42 @@ function setKey(text: string, table: string[], key: string, value: string, comme
 	return lines.join("\n");
 }
 
+/**
+ * Take the old `$ci` row out of `[ui.sidebar.spaces] rows`. When only Herdr's default rows remain, the whole
+ * `rows` statement goes, and the table too when nothing else is in it.
+ */
+function dropOldSpaceRow(text: string, rows: Rows): string {
+	const rest = without(rows, OLD_SPACE_TOKEN);
+	const lines = text.split("\n");
+	const statements = scan(lines);
+	const headerIndex = statements.findIndex((s) => s.kind === "table" && same(s.path, ["ui", "sidebar", "spaces"]));
+	const header = statements[headerIndex];
+	if (!header) throw new ManualSetupError("its space rows are written in a way pi-monitor does not edit");
+	const nextHeader = statements.find((s, i) => i > headerIndex && s.kind !== "key");
+	const sectionEnd = nextHeader ? nextHeader.start : lines.length;
+	const existing = statements.find(
+		(s) => s.kind === "key" && s.start > header.start && s.start < sectionEnd && same(s.path, ["rows"]),
+	);
+	if (!existing) throw new ManualSetupError("its space rows are written in a way pi-monitor does not edit");
+	const hasComment = lines[existing.start - 1]!.trim().startsWith(MARKER);
+	const from = hasComment ? existing.start - 1 : existing.start;
+	if (JSON.stringify(rest) !== JSON.stringify(DEFAULT_SPACE_ROWS)) {
+		lines.splice(from, existing.end - from + 1, `rows = ${rowsValue(rest)}`);
+		return lines.join("\n");
+	}
+	const othersBlank = lines
+		.slice(header.end + 1, sectionEnd)
+		.every((line, i) => line.trim() === "" || (header.end + 1 + i >= from && header.end + 1 + i <= existing.end));
+	if (!othersBlank) {
+		lines.splice(from, existing.end - from + 1);
+		return lines.join("\n");
+	}
+	const start = header.start > 0 && lines[header.start - 1]!.trim() === "" ? header.start - 1 : header.start;
+	lines.splice(start, sectionEnd - start, ...(nextHeader && start < header.start ? [""] : []));
+	const out = lines.join("\n");
+	return text.endsWith("\n") && !out.endsWith("\n") ? `${out}\n` : out;
+}
+
 function lookup(doc: unknown, path: readonly string[]): unknown {
 	let node = doc;
 	for (const part of path) {
@@ -159,28 +193,24 @@ function lookup(doc: unknown, path: readonly string[]): unknown {
 
 /** What `/monitors herdr` adds, for people who edit the file themselves. */
 export function manualSnippet(palette: HerdrPalette = DEFAULT_PALETTE): string {
-	return [
-		"[ui.sidebar.agents]",
-		`rows = ${rowsValue([...DEFAULT_AGENT_ROWS, monitorRow(palette)])}`,
-		"",
-		"[ui.sidebar.spaces]",
-		`rows = ${rowsValue([...DEFAULT_SPACE_ROWS, ciRow(palette)])}`,
-	].join("\n");
+	return ["[ui.sidebar.agents]", `rows = ${rowsValue([...DEFAULT_AGENT_ROWS, monitorRow(palette)])}`].join("\n");
 }
 
 export interface MergeResult {
 	text: string;
 	changed: boolean;
-	/** The config already had our rows; this run only refreshed them (new colours). */
+	/** The config already had our row; this run only refreshed it (new colours). */
 	updated: boolean;
+	/** This run took the old `$ci` row out of the space rows. */
+	removedSpaceRow: boolean;
 	/** Herdr toasts: `off` when the user turned them off (`[ui.toast] delivery = "off"`). We leave that choice alone. */
 	toast: "on" | "off";
 }
 
 /**
- * Add the monitor rows to Herdr's config text. Keeps the user's rows (or Herdr's defaults when there are none)
- * and appends a `$mon` row to the agent rows and a `$ci` row to the space rows. Agent rows go to
- * `rows_by_agent.pi` when the user has one for pi.
+ * Add the monitor row to Herdr's config text. Keeps the user's agent rows (or Herdr's defaults when there are
+ * none) and appends a `$mon` row. The row goes to `rows_by_agent.pi` when the user has one for pi.
+ * Takes out the `$ci` space row that earlier versions added.
  * Running it again gives the same text. Everything else in the file stays as it is.
  */
 export function mergeHerdrConfig(text: string, palette: HerdrPalette = DEFAULT_PALETTE): MergeResult {
@@ -198,14 +228,13 @@ export function mergeHerdrConfig(text: string, palette: HerdrPalette = DEFAULT_P
 				key: "rows",
 				rows: (lookup(doc, ["ui", "sidebar", "agents", "rows"]) as Rows | undefined) ?? DEFAULT_AGENT_ROWS,
 			};
-	const spaceRows = (lookup(doc, ["ui", "sidebar", "spaces", "rows"]) as Rows | undefined) ?? DEFAULT_SPACE_ROWS;
-	const wanted = {
-		agents: [...without(agentTable.rows, `$${PANE_TOKEN}`), monitorRow(palette)],
-		spaces: [...without(spaceRows, `$${SPACE_TOKEN}`), ciRow(palette)],
-	};
+	const wantedAgents = [...without(agentTable.rows, `$${PANE_TOKEN}`), monitorRow(palette)];
+	const spaceRows = lookup(doc, ["ui", "sidebar", "spaces", "rows"]) as Rows | undefined;
+	const removedSpaceRow = Array.isArray(spaceRows) && JSON.stringify(spaceRows).includes(`"${OLD_SPACE_TOKEN}"`);
+	const wantedSpaces = removedSpaceRow ? without(spaceRows, OLD_SPACE_TOKEN) : spaceRows;
 
-	let next = setKey(text, agentTable.table, agentTable.key, rowsValue(wanted.agents), ROWS_COMMENT);
-	next = setKey(next, ["ui", "sidebar", "spaces"], "rows", rowsValue(wanted.spaces), ROWS_COMMENT);
+	let next = removedSpaceRow ? dropOldSpaceRow(text, spaceRows) : text;
+	next = setKey(next, agentTable.table, agentTable.key, rowsValue(wantedAgents), ROWS_COMMENT);
 
 	// Check the result says what we meant. Dotted keys or inline tables we do not edit would make it differ.
 	let check: unknown;
@@ -214,15 +243,17 @@ export function mergeHerdrConfig(text: string, palette: HerdrPalette = DEFAULT_P
 	} catch {
 		throw new ManualSetupError("its tables are written in a way pi-monitor does not edit");
 	}
+	const spacesNow = lookup(check, ["ui", "sidebar", "spaces", "rows"]) ?? DEFAULT_SPACE_ROWS;
 	const ok =
-		JSON.stringify(lookup(check, [...agentTable.table, agentTable.key])) === JSON.stringify(wanted.agents) &&
-		JSON.stringify(lookup(check, ["ui", "sidebar", "spaces", "rows"])) === JSON.stringify(wanted.spaces);
+		JSON.stringify(lookup(check, [...agentTable.table, agentTable.key])) === JSON.stringify(wantedAgents) &&
+		JSON.stringify(spacesNow) === JSON.stringify(wantedSpaces ?? DEFAULT_SPACE_ROWS);
 	if (!ok) throw new ManualSetupError("its tables are written in a way pi-monitor does not edit");
 
 	return {
 		text: next,
 		changed: next !== text,
 		updated: JSON.stringify(agentTable.rows).includes(`"$${PANE_TOKEN}"`),
+		removedSpaceRow,
 		toast: lookup(doc, ["ui", "toast", "delivery"]) === "off" ? "off" : "on",
 	};
 }

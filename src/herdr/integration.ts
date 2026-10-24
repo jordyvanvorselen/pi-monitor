@@ -14,13 +14,14 @@ import {
 	ManualSetupError,
 	manualSnippet,
 	MARKER,
+	OLD_SPACE_TOKEN,
 	restoreHerdrConfig,
 	setupHerdrConfig,
 	type HerdrPalette,
 	type SetupResult,
 } from "./config.ts";
 import { HerdrSidebar } from "./sidebar.ts";
-import { capChars, GLYPHS, PANE_TOKEN, SPACE_TOKEN } from "./tokens.ts";
+import { capChars, GLYPHS, PANE_TOKEN } from "./tokens.ts";
 
 export const STARTUP_NOTE =
 	"Herdr detected. Show monitors in the Herdr sidebar: /monitors herdr. Hide this note: /monitors herdr off";
@@ -160,7 +161,6 @@ export class HerdrIntegration {
 			this.sidebar = new HerdrSidebar({
 				request: (method, params) => client.request(method, params),
 				paneId: this.target.paneId,
-				...(this.target.workspaceId ? { workspaceId: this.target.workspaceId } : {}),
 				items: () => this.deps.monitors(),
 				clock: this.deps.clock,
 			});
@@ -234,15 +234,17 @@ export class HerdrIntegration {
 			return ui.notify(lines.join("\n"), "warning");
 		}
 
-		if (!result.changed) lines.push(`Herdr config: ${this.tilde(path)} already has the monitor rows.`);
+		if (!result.changed) lines.push(`Herdr config: ${this.tilde(path)} already has the monitor row.`);
 		else {
-			const rows = `the $${PANE_TOKEN} agent row and the $${SPACE_TOKEN} space row`;
+			const row = `the $${PANE_TOKEN} agent row`;
 			const what = result.created
-				? `created ${this.tilde(path)} with ${rows}`
+				? `created ${this.tilde(path)} with ${row}`
 				: result.updated
-					? `updated the colours of ${rows} in ${this.tilde(path)}`
-					: `added ${rows} to ${this.tilde(path)}`;
+					? `updated ${row} in ${this.tilde(path)}`
+					: `added ${row} to ${this.tilde(path)}`;
 			lines.push(`Herdr config: ${what}.`);
+			if (result.removedSpaceRow)
+				lines.push(`Removed the old ${OLD_SPACE_TOKEN} row from the space rows. Monitors now show per pane only.`);
 			if (result.backup) lines.push(`Backup: ${this.tilde(result.backup)}`);
 		}
 		if (result.toast === "off")
@@ -279,7 +281,7 @@ export class HerdrIntegration {
 		const path = herdrConfigPath(this.deps.env, this.home());
 		if (this.hasRows(path))
 			lines.push(
-				`The $${PANE_TOKEN} and $${SPACE_TOKEN} rows in ${this.tilde(path)} stay and show nothing. To remove them, delete those rows below the "${MARKER}" comments.`,
+				`The $${PANE_TOKEN} row in ${this.tilde(path)} stays and shows nothing. To remove it, delete that row below the "${MARKER}" comment.`,
 			);
 		ui.notify(lines.join("\n"), "info");
 	}
@@ -298,7 +300,7 @@ export class HerdrIntegration {
 		return [
 			`Herdr: ${this.target ? `pi runs in pane ${this.target.paneId}` : "pi does not run inside Herdr"}`,
 			`Sidebar: ${setting === "on" ? "on" : setting === "off" ? "off" : "not set up (/monitors herdr)"}${this.active ? ", sending" : ""}`,
-			`Config: ${this.hasRows(path) ? "has" : "no"} monitor rows in ${this.tilde(path)}`,
+			`Config: ${this.hasRows(path) ? "has a" : "no"} monitor row in ${this.tilde(path)}`,
 			`Blocked mark on failures (herdrAttention): ${this.deps.settings().herdrAttention ? "on" : "off"}`,
 			...(this.client?.backingOff ? ["Herdr did not answer the last request. pi-monitor tries again later."] : []),
 		].join("\n");

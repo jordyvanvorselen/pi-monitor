@@ -4,8 +4,6 @@ import { jobCounts } from "../ui/glyphs.ts";
 
 /** Pane token for the agent row: the most important monitor. */
 export const PANE_TOKEN = "mon";
-/** Workspace token for the space row: GitHub runs only. */
-export const SPACE_TOKEN = "ci";
 /** Herdr cuts token values at 80 characters. */
 export const MAX_TOKEN_CHARS = 80;
 
@@ -76,13 +74,4 @@ export function paneToken(items: readonly DockItem[], now: number): string | nul
 	const others = visible.filter((i) => i !== top && i.status === "running").length;
 	const more = others ? ` +${others}` : "";
 	return capChars(itemToken(top, now), MAX_TOKEN_CHARS - more.length) + more;
-}
-
-/** The `$ci` value for the space row: `✗ CI`, `◐ CI` or `✓ CI` from GitHub monitors. Null without any. */
-export function spaceToken(items: readonly DockItem[], now: number): string | null {
-	const gh = items.filter((i) => isGitHub(i) && isVisible(i, now));
-	if (gh.some(hasFailure)) return `${GLYPHS.failure} CI`;
-	if (gh.some((i) => i.status === "running")) return `${GLYPHS.running} CI`;
-	if (gh.some((i) => i.status === "success")) return `${GLYPHS.success} CI`;
-	return null;
 }

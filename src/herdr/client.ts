@@ -6,17 +6,12 @@ import { join } from "node:path";
 export interface HerdrTarget {
 	socketPath: string;
 	paneId: string;
-	workspaceId?: string;
 }
 
 /** The Herdr pane pi runs in, or undefined outside Herdr. */
 export function detectHerdr(env: NodeJS.ProcessEnv): HerdrTarget | undefined {
 	if (env.HERDR_ENV !== "1" || !env.HERDR_SOCKET_PATH || !env.HERDR_PANE_ID) return undefined;
-	return {
-		socketPath: env.HERDR_SOCKET_PATH,
-		paneId: env.HERDR_PANE_ID,
-		...(env.HERDR_WORKSPACE_ID ? { workspaceId: env.HERDR_WORKSPACE_ID } : {}),
-	};
+	return { socketPath: env.HERDR_SOCKET_PATH, paneId: env.HERDR_PANE_ID };
 }
 
 /** Herdr's config file: `HERDR_CONFIG_PATH`, else `$XDG_CONFIG_HOME/herdr/config.toml`, else `~/.config/herdr/config.toml`. */

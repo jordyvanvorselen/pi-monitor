@@ -6,7 +6,7 @@ import { fakeHerdr } from "./fake-herdr.ts";
 describe("Herdr detection", () => {
 	it("needs HERDR_ENV=1, a socket path and a pane id", () => {
 		const env = { HERDR_ENV: "1", HERDR_SOCKET_PATH: "/tmp/h.sock", HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" };
-		assert.deepEqual(detectHerdr(env), { socketPath: "/tmp/h.sock", paneId: "w1:p1", workspaceId: "w1" });
+		assert.deepEqual(detectHerdr(env), { socketPath: "/tmp/h.sock", paneId: "w1:p1" });
 		assert.equal(detectHerdr({ ...env, HERDR_ENV: "0" }), undefined);
 		assert.equal(detectHerdr({ ...env, HERDR_PANE_ID: "" }), undefined);
 		assert.equal(detectHerdr({ TERM_PROGRAM: "herdr" }), undefined);

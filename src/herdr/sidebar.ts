@@ -1,13 +1,13 @@
 import type { Clock } from "../delivery.ts";
 import { isVisible, type DockItem } from "../ui/dock.ts";
 import type { HerdrReply } from "./client.ts";
-import { PANE_TOKEN, paneToken, SPACE_TOKEN, spaceToken } from "./tokens.ts";
+import { PANE_TOKEN, paneToken } from "./tokens.ts";
 
 /** Fixed metadata source. Herdr keeps at most 32 sources per pane for its lifetime, so never vary it. */
 export const SOURCE = "pi-monitor";
-/** Herdr drops our tokens this long after the last report, e.g. when pi crashes. */
+/** Herdr drops our token this long after the last report, e.g. when pi crashes. */
 export const TTL_MS = 60_000;
-/** Reports again before the TTL runs out while a token still shows. */
+/** Reports again before the TTL runs out while the token still shows. */
 export const REFRESH_MS = 30_000;
 /** At most one report per this interval: every token change resends the sidebar to SSH clients. */
 export const MIN_INTERVAL_MS = 1_000;
@@ -15,23 +15,21 @@ export const MIN_INTERVAL_MS = 1_000;
 export interface SidebarDeps {
 	request(method: string, params: Record<string, unknown>): Promise<HerdrReply | undefined>;
 	paneId: string;
-	workspaceId?: string;
 	items(): readonly DockItem[];
 	clock: Clock;
 }
 
-type Value = string | null;
-
 /**
- * Keeps the `$mon` pane token and the `$ci` workspace token in Herdr up to date.
- * Sends only when a value changes, at most once a second, refreshes the TTL while a value shows,
- * and clears values with null when nothing is left.
+ * Keeps the `$mon` pane token in Herdr up to date. Only the pane: two pi sessions in one space
+ * would overwrite each other's space token, because Herdr keeps the last value per key.
+ * Sends only when the value changes, at most once a second, refreshes the TTL while it shows,
+ * and clears it with null when nothing is left.
  */
 export class HerdrSidebar {
 	private readonly deps: SidebarDeps;
 	/** What Herdr has. Undefined: not known yet, so the first tick sends even a null. */
-	private sent: { pane?: Value; space?: Value } = {};
-	private sentAt = { pane: 0, space: 0 };
+	private sent: string | null | undefined;
+	private sentAt = 0;
 	private lastSendAt = Number.NEGATIVE_INFINITY;
 	private timer: unknown;
 	private busy = false;
@@ -49,14 +47,11 @@ export class HerdrSidebar {
 		else this.schedule(wait);
 	}
 
-	/** Clear our tokens and stop. Resolves when Herdr answered (or did not). */
+	/** Clear our token and stop. Resolves when Herdr answered (or did not). */
 	async stop(): Promise<void> {
 		this.stopped = true;
 		this.cancel();
-		const tokens: Promise<unknown>[] = [];
-		if (this.sent.pane !== null) tokens.push(this.report("pane", null));
-		if (this.deps.workspaceId && this.sent.space !== null) tokens.push(this.report("space", null));
-		await Promise.all(tokens);
+		if (this.sent !== null) await this.report(null);
 	}
 
 	/** True while a timer is pending. */
@@ -70,37 +65,30 @@ export class HerdrSidebar {
 		if (this.busy) return this.schedule(MIN_INTERVAL_MS);
 		const now = this.deps.clock.now();
 		const items = this.deps.items();
-		const wanted = { pane: paneToken(items, now), space: this.deps.workspaceId ? spaceToken(items, now) : null };
-		const due = (key: "pane" | "space") =>
-			wanted[key] !== this.sent[key] || (wanted[key] !== null && now - this.sentAt[key] >= REFRESH_MS);
-		const sends: Promise<unknown>[] = [];
-		if (due("pane")) sends.push(this.report("pane", wanted.pane));
-		if (this.deps.workspaceId && due("space")) sends.push(this.report("space", wanted.space));
-		if (sends.length) {
+		const wanted = paneToken(items, now);
+		const due = wanted !== this.sent || (wanted !== null && now - this.sentAt >= REFRESH_MS);
+		if (due) {
 			this.lastSendAt = now;
 			this.busy = true;
-			await Promise.all(sends);
+			await this.report(wanted);
 			this.busy = false;
 		}
 		// Keep ticking while something shows: clocks move, finished rows expire, the TTL needs a refresh.
 		const live = items.some((i) => isVisible(i, now));
-		if (!this.stopped && (live || this.sent.pane || this.sent.space)) this.schedule(MIN_INTERVAL_MS);
+		if (!this.stopped && (live || this.sent)) this.schedule(MIN_INTERVAL_MS);
 	}
 
-	private async report(key: "pane" | "space", value: Value): Promise<void> {
-		const name = key === "pane" ? PANE_TOKEN : SPACE_TOKEN;
-		const target = key === "pane" ? { pane_id: this.deps.paneId } : { workspace_id: this.deps.workspaceId };
-		const method = key === "pane" ? "pane.report_metadata" : "workspace.report_metadata";
-		const reply = await this.deps.request(method, {
-			...target,
+	private async report(value: string | null): Promise<void> {
+		const reply = await this.deps.request("pane.report_metadata", {
+			pane_id: this.deps.paneId,
 			source: SOURCE,
-			tokens: { [name]: value },
+			tokens: { [PANE_TOKEN]: value },
 			...(value === null ? {} : { ttl_ms: TTL_MS }),
 		});
 		// Not reached: try again on the next tick. Refused (logged by the client): do not repeat it every second.
 		if (!reply) return;
-		this.sent[key] = value;
-		this.sentAt[key] = this.deps.clock.now();
+		this.sent = value;
+		this.sentAt = this.deps.clock.now();
 	}
 
 	private schedule(ms: number): void {

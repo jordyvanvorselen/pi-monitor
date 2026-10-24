@@ -166,7 +166,7 @@ describe("/monitors herdr", () => {
 		assert.equal(note.type, "info");
 		assert.match(note.text, /Herdr sidebar on/);
 		assert.match(note.text, /settings\.json/);
-		assert.match(note.text, new RegExp(`added the \\$mon agent row and the \\$ci space row to ${configPath}`));
+		assert.match(note.text, new RegExp(`added the \\$mon agent row to ${configPath}`));
 		assert.match(note.text, /Backup: .*config\.toml\.pi-monitor-.*\.bak/);
 		assert.match(note.text, /Herdr reloaded its config/);
 
@@ -177,10 +177,25 @@ describe("/monitors herdr", () => {
 		assert.equal(report.params.source, "pi-monitor");
 		assert.equal(report.params.pane_id, "w1:p1");
 		assert.deepEqual(report.params.tokens, { mon: "◐ dev" });
+		assert.equal(server.methods().includes("workspace.report_metadata"), false, "per pane only, never the space");
 
 		stub.notes.length = 0;
 		await command("herdr");
-		assert.match(stub.notes[0]!.text, /already has the monitor rows/);
+		assert.match(stub.notes[0]!.text, /already has the monitor row\./);
+		await h.fire("session_shutdown", { reason: "quit" });
+		await server.close();
+	});
+
+	it("takes out the $ci space row an earlier version added and says so", async () => {
+		const { h, server, stub, configPath, command } = await setup();
+		writeFileSync(
+			configPath,
+			'[ui.sidebar.spaces]\n# pi-monitor: monitor rows\nrows = [\n  ["state_icon", "workspace"],\n  ["branch", "git_status"],\n  [{ token = "$ci" }],\n]\n',
+		);
+		await h.fire("session_start", { reason: "startup" });
+		await command("herdr");
+		assert.doesNotMatch(readFileSync(configPath, "utf8"), /\$ci|ui\.sidebar\.spaces/);
+		assert.match(stub.notes.at(-1)!.text, /Removed the old \$ci row from the space rows/);
 		await h.fire("session_shutdown", { reason: "quit" });
 		await server.close();
 	});
@@ -216,7 +231,7 @@ describe("/monitors herdr", () => {
 		});
 		assert.match(readFileSync(configPath, "utf8"), /\$mon/);
 		assert.match(stub.notes[0]!.text, /Herdr sidebar off/);
-		assert.match(stub.notes[0]!.text, /delete those rows below the "# pi-monitor" comments/);
+		assert.match(stub.notes[0]!.text, /delete that row below the "# pi-monitor" comment/);
 		const reports = server.received.length;
 		await h.call("monitor", { description: "dev 2", command: "sleep 5" });
 		await new Promise((resolve) => setTimeout(resolve, 50));
