@@ -1,8 +1,27 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Attention, BLOCKED_EVENT, GRACE_MS } from "../src/herdr/attention.ts";
-import { HerdrSidebar, MIN_INTERVAL_MS, REFRESH_MS, SOURCE, TTL_MS } from "../src/herdr/sidebar.ts";
-import { capChars, countTokens, etaCells, MAX_TOKEN_CHARS, paneToken } from "../src/herdr/tokens.ts";
+import {
+	HerdrSidebar,
+	MIN_INTERVAL_MS,
+	REFRESH_MS,
+	SOURCE,
+	TEXT_INTERVAL_MS,
+	TTL_MS,
+	urgentChange,
+} from "../src/herdr/sidebar.ts";
+import {
+	capChars,
+	countTokens,
+	cutColumns,
+	etaCells,
+	itemToken,
+	MAX_TOKEN_CHARS,
+	NAME_MIN,
+	paneToken,
+	TARGET_COLUMNS,
+} from "../src/herdr/tokens.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Job } from "../src/sources/types.ts";
 import type { DockItem } from "../src/ui/dock.ts";
 import { FakeClock } from "./helpers.ts";
@@ -50,8 +69,8 @@ const failing = item({
 });
 
 describe("Herdr tokens", () => {
-	it("shows a running GitHub run with job counts and whole minutes: ◐ CI #42 3/5 · 4m", () => {
-		assert.equal(paneToken([ci], NOW), "◐ CI #42 3/5 · 4m");
+	it("shows a running GitHub run with job counts and whole minutes: ◐ CI #42 3/5 4m", () => {
+		assert.equal(paneToken([ci], NOW), "◐ CI #42 3/5 4m");
 	});
 
 	it("leaves the clock out in the first minute, so the token does not change every second", () => {
@@ -59,9 +78,9 @@ describe("Herdr tokens", () => {
 	});
 
 	it("puts failures first, then running GitHub runs, then other running monitors, without a +N count", () => {
-		assert.equal(paneToken([devServer, ci, failing], NOW), "✗ e2e #17 checkout failed");
-		assert.equal(paneToken([devServer, ci], NOW), "◐ CI #42 3/5 · 4m");
-		assert.equal(paneToken([devServer], NOW), "◐ dev server · 10m");
+		assert.equal(paneToken([devServer, ci, failing], NOW), "✗ e2e #17 checkout");
+		assert.equal(paneToken([devServer, ci], NOW), "◐ CI #42 3/5 4m");
+		assert.equal(paneToken([devServer], NOW), "◐ dev server 10m");
 	});
 
 	it("shows the finish moment for as long as the dock does, before other running monitors", () => {
@@ -73,8 +92,8 @@ describe("Herdr tokens", () => {
 			summary: "CI #42 green in 6m02s",
 			endedAt: NOW - 2_000,
 		});
-		assert.equal(paneToken([devServer, green], NOW), "✓ CI #42 green in 6m02s");
-		assert.equal(paneToken([devServer, green], NOW + 9_000), "◐ dev server · 10m");
+		assert.equal(paneToken([devServer, green], NOW), "✓ CI #42 4m08s");
+		assert.equal(paneToken([devServer, green], NOW + 9_000), "◐ dev server 10m");
 		assert.equal(paneToken([green], NOW + 9_000), null);
 	});
 
@@ -89,27 +108,103 @@ describe("Herdr tokens", () => {
 		assert.equal(paneToken([{ ...devServer, paused: true }], NOW), "‖ dev server paused");
 	});
 
-	it("stays within Herdr's 80 characters by cutting the name, keeping the glyph, bar and job counts", () => {
+	it("never passes Herdr's 80 characters, also with a wider target", () => {
 		const long = { ...ci, progress: { title: "x".repeat(120), jobs, etaMs: 500_000 } };
-		const token = paneToken([long, devServer], NOW)!;
+		const token = itemToken(long, NOW, 200);
 		assert.equal(Array.from(token).length, MAX_TOKEN_CHARS);
-		assert.match(token, /^◐ x+… ▰▰▱▱▱ 3\/5 · 4m$/);
+		assert.match(token, /^◐ x+…$/);
 		assert.equal(capChars("✓".repeat(81), 80).length, 80);
-		const failedLong = { ...failing, progress: { ...failing.progress, title: "y".repeat(120) } };
-		assert.match(paneToken([failedLong], NOW)!, /^✗ y+…$/, "other states are cut at the end and keep their glyph");
 	});
 
-	it("draws a 5-cell ETA bar from the dock's estimate for GitHub runs: ◐ CI #42 ▰▰▱▱▱ 3/5 · 4m", () => {
+	it("uses the dock's clock format for long runs: 2h14m, not 2h14", () => {
+		assert.equal(paneToken([{ ...devServer, startedAt: NOW - 8_040_000 }], NOW), "◐ dev server 2h14m");
+	});
+
+	it("ends short enough for Herdr's 26-column sidebar: ✓ Deploy #88 2m40s, ✗ e2e #17 checkout, ✗ tests code 1", () => {
+		const ended = (partial: Partial<DockItem> & Pick<DockItem, "status">) =>
+			item({ id: "e", kind: "command", endedAt: NOW, ...partial });
+		const cases: [DockItem, string][] = [
+			[
+				ended({ kind: "gh_run", status: "success", progress: { title: "Deploy #88", startedAt: NOW - 160_000 } }),
+				"✓ Deploy #88 2m40s",
+			],
+			[
+				ended({ kind: "gh_run", status: "failure", progress: { title: "e2e #17", jobs: failing.progress.jobs! } }),
+				"✗ e2e #17 checkout",
+			],
+			[ended({ status: "failure", description: "tests", summary: "exited with code 1 after 4m02s" }), "✗ tests code 1"],
+			[ended({ status: "failure", description: "dev", summary: "killed by SIGKILL after 3s" }), "✗ dev SIGKILL"],
+			[
+				ended({ kind: "gh_run", status: "failure", progress: { title: "CI #9" }, summary: "CI #9 cancelled after 1m" }),
+				"✗ CI #9 cancelled",
+			],
+			[ended({ status: "timeout", description: "build", summary: "timed out after 30m" }), "◔ build timed out"],
+			[ended({ status: "stopped", description: "dev", summary: "stopped by the user after 2m" }), "■ dev stopped"],
+		];
+		for (const [monitor, token] of cases) {
+			assert.equal(itemToken(monitor, NOW), token);
+			assert.ok(visibleWidth(token) <= TARGET_COLUMNS, token);
+		}
+	});
+
+	it("aims at 22 columns: first cuts the name, then drops the clock, then the ETA bar, then the job counts", () => {
+		const run = (title: string) => ({ ...ci, progress: { title, jobs, etaMs: 500_000 } });
+		assert.equal(itemToken(run("CI #42"), NOW), "◐ CI #42 ▰▰▱▱▱ 3/5 4m", "everything fits");
+		assert.equal(itemToken(run("Deploy-prod #12"), NOW, 24), "◐ Deploy-p… ▰▰▱▱▱ 3/5 4m", "1. the name is cut");
+		assert.equal(itemToken(run("Deploy production"), NOW), "◐ Deploy pr… ▰▰▱▱▱ 3/5", "2. the clock goes");
+		assert.equal(itemToken(run("Deploy production"), NOW, 20), "◐ Deploy… ▰▰▱▱▱ 3/5", "the name down to 8 again");
+		assert.equal(itemToken(run("Deploy production"), NOW, 18), "◐ Deploy prod… 3/5", "3. then the ETA bar");
+		assert.equal(itemToken(run("Deploy production"), NOW, 12), "◐ Deploy pr…", "4. then the job counts");
+		assert.equal(itemToken(run("Deploy production"), NOW, 8), "◐ Deplo…", "5. last, the name below 8 columns");
+		for (const title of ["x", "CI #42", "Deploy production #1234", "y".repeat(120)])
+			assert.ok(visibleWidth(itemToken(run(title), NOW)) <= TARGET_COLUMNS, title);
+	});
+
+	it("keeps a name of up to 8 columns whole before anything else goes", () => {
+		assert.equal(NAME_MIN, 8);
+		assert.equal(cutColumns("Deploy production", NAME_MIN), "Deploy…", "no space before the ellipsis");
+		assert.equal(cutColumns("⏳⏳⏳", 4), "⏳…", "wide characters count as two columns");
+	});
+
+	it("cuts a failed job name only after the name, and drops the +N of more failed jobs first", () => {
+		const twoFailed = item({
+			id: "m9",
+			kind: "gh_run",
+			status: "running",
+			progress: {
+				title: "Integration tests #170",
+				jobs: [
+					{ name: "checkout-and-payments", state: "failure" },
+					{ name: "cart", state: "failure" },
+				],
+			},
+		});
+		assert.equal(itemToken(twoFailed, NOW, 80), "✗ Integration tests #170 checkout-and-payments +1");
+		assert.equal(itemToken(twoFailed, NOW), "✗ Integra… checkout-a…");
+	});
+
+	it("adds ↳ while pi is on it, after the glyph and within 22 columns: ✗ e2e #17 checkout ↳", () => {
+		assert.equal(paneToken([{ ...failing, handling: true }], NOW), "✗ e2e #17 checkout ↳");
+		assert.equal(paneToken([{ ...ci, handling: true }], NOW), "◐ CI #42 3/5 4m ↳");
+		const longFail = { ...failing, handling: true, progress: { ...failing.progress, title: "Integration tests #170" } };
+		const token = paneToken([longFail], NOW)!;
+		assert.match(token, /^✗ .* ↳$/, "the marker never goes");
+		assert.ok(visibleWidth(token) <= TARGET_COLUMNS, token);
+		const done = item({ id: "m1", kind: "command", status: "failure", summary: "exited with code 2", endedAt: NOW });
+		assert.equal(paneToken([{ ...done, description: "tests", handling: true }], NOW), "✗ tests code 2 ↳");
+	});
+
+	it("draws a 5-cell ETA bar from the dock's estimate for GitHub runs: ◐ CI #42 ▰▰▱▱▱ 3/5 4m", () => {
 		const withEta = (etaMs: number) => ({ ...ci, progress: { ...ci.progress, etaMs } });
-		assert.equal(paneToken([withEta(500_000)], NOW), "◐ CI #42 ▰▰▱▱▱ 3/5 · 4m", "250 s of ~500 s: two cells");
-		assert.equal(paneToken([withEta(1_000_000)], NOW), "◐ CI #42 ▰▱▱▱▱ 3/5 · 4m");
+		assert.equal(paneToken([withEta(500_000)], NOW), "◐ CI #42 ▰▰▱▱▱ 3/5 4m", "250 s of ~500 s: two cells");
+		assert.equal(paneToken([withEta(1_000_000)], NOW), "◐ CI #42 ▰▱▱▱▱ 3/5 4m");
 		assert.equal(etaCells(0, 600_000), "▱▱▱▱▱");
 		assert.equal(etaCells(599_000, 600_000), "▰▰▰▰▱");
 	});
 
 	it("never fills the last cell while the run is still going, also past the ETA", () => {
 		const late = { ...ci, progress: { ...ci.progress, etaMs: 100_000 } };
-		assert.equal(paneToken([late], NOW), "◐ CI #42 ▰▰▰▰▱ 3/5 · 4m");
+		assert.equal(paneToken([late], NOW), "◐ CI #42 ▰▰▰▰▱ 3/5 4m");
 	});
 
 	it("only changes when a whole cell fills, so the once-a-second throttle stays quiet", () => {
@@ -119,10 +214,10 @@ describe("Herdr tokens", () => {
 	});
 
 	it("shows no bar without an ETA, for other monitors, and for failure and finish moments", () => {
-		assert.equal(paneToken([ci], NOW), "◐ CI #42 3/5 · 4m");
-		assert.equal(paneToken([{ ...devServer, progress: { etaMs: 60_000 } }], NOW), "◐ dev server · 10m");
+		assert.equal(paneToken([ci], NOW), "◐ CI #42 3/5 4m");
+		assert.equal(paneToken([{ ...devServer, progress: { etaMs: 60_000 } }], NOW), "◐ dev server 10m");
 		const failingEta = { ...failing, progress: { ...failing.progress, etaMs: 500_000 } };
-		assert.equal(paneToken([failingEta], NOW), "✗ e2e #17 checkout failed");
+		assert.equal(paneToken([failingEta], NOW), "✗ e2e #17 checkout");
 		const green = item({
 			id: "m1",
 			kind: "gh_run",
@@ -131,7 +226,7 @@ describe("Herdr tokens", () => {
 			summary: "CI #42 green in 6m02s",
 			endedAt: NOW - 1_000,
 		});
-		assert.equal(paneToken([green], NOW), "✓ CI #42 green in 6m02s");
+		assert.equal(paneToken([green], NOW), "✓ CI #42 4m09s");
 	});
 
 	it("counts monitors per state with the same glyphs as $mon: ✗1 ◐2 ⏳1", () => {
@@ -208,7 +303,7 @@ describe("Herdr sidebar sync", () => {
 				params: {
 					pane_id: "w1:p1",
 					source: SOURCE,
-					tokens: { mon: "◐ CI #42 3/5 · 4m", mon_fail: null, mon_run: null, mon_wait: null, mon_ok: null },
+					tokens: { mon: "◐ CI #42 3/5 4m", mon_fail: null, mon_run: null, mon_wait: null, mon_ok: null },
 					ttl_ms: TTL_MS,
 				},
 			},
@@ -223,23 +318,69 @@ describe("Herdr sidebar sync", () => {
 		assert.equal(requests.length, 1);
 	});
 
-	it("sends at most once a second: a burst of changes becomes one trailing report", async () => {
+	it("sends a new $mon glyph on the next tick, never more than once a second: a burst becomes one report", async () => {
 		const items = [ci];
 		const { sidebar, settle, step, panes } = sidebarSetup(items);
 		sidebar.update();
 		await settle();
-		for (let done = 3; done <= 5; done++) {
-			items[0] = {
-				...ci,
-				progress: { title: "CI #42", jobs: jobs.map((j, i) => ({ ...j, state: i < done ? "success" : j.state })) },
-			};
-			sidebar.update();
-			await settle();
-		}
+		items[0] = failing;
+		sidebar.update();
+		items[0] = { ...failing, handling: true };
+		sidebar.update();
+		await settle();
 		assert.equal(panes().length, 1, "changes within the second wait");
 		await step(MIN_INTERVAL_MS);
 		assert.equal(panes().length, 2);
-		assert.equal(panes()[1]!.tokens && (panes()[1]!.tokens as Record<string, string>).mon, "◐ CI #42 5/5 · 4m");
+		assert.deepEqual(panes()[1]!.tokens, { mon: "✗ e2e #17 checkout ↳" });
+	});
+
+	it("holds text-only changes of $mon, like job counts and the clock, until 5 s after the last report", async () => {
+		const items = [ci];
+		const { sidebar, settle, step, panes } = sidebarSetup(items);
+		sidebar.update();
+		await settle();
+		const done5 = jobs.map((j) => ({ ...j, state: "success" as const }));
+		items[0] = { ...ci, progress: { title: "CI #42", jobs: done5 } };
+		sidebar.update();
+		for (let t = MIN_INTERVAL_MS; t < TEXT_INTERVAL_MS; t += MIN_INTERVAL_MS) await step(MIN_INTERVAL_MS);
+		assert.equal(panes().length, 1, "same glyph: the text waits");
+		await step(MIN_INTERVAL_MS);
+		assert.equal(panes().length, 2);
+		assert.deepEqual(panes()[1]!.tokens, { mon: "◐ CI #42 5/5 4m" });
+	});
+
+	it("sends a count change on the next tick and takes the waiting $mon text along", async () => {
+		const items: DockItem[] = [ci, devServer];
+		const { sidebar, settle, step, panes } = sidebarSetup(items);
+		sidebar.update();
+		await settle();
+		items[0] = { ...ci, progress: { title: "CI #42", jobs: jobs.map((j) => ({ ...j, state: "success" as const })) } };
+		await step(MIN_INTERVAL_MS);
+		assert.equal(panes().length, 1, "text only so far");
+		items.push(item({ id: "m4", kind: "command", status: "running", probationUntil: NOW + 60_000 }));
+		await step(MIN_INTERVAL_MS);
+		assert.equal(panes().length, 2);
+		assert.deepEqual(panes()[1]!.tokens, { mon: "◐ CI #42 5/5 4m", mon_wait: "⏳1" });
+	});
+
+	it("reports an urgent change (glyph, count or ↳) at once on update() when the last report is a second or more old", async () => {
+		const items = [ci];
+		const { sidebar, settle, step, clock, panes } = sidebarSetup(items);
+		sidebar.update();
+		await settle();
+		await step(MIN_INTERVAL_MS / 2);
+		clock.advance(MIN_INTERVAL_MS / 2 + 200);
+		items[0] = failing;
+		const at = clock.now();
+		sidebar.update();
+		await settle();
+		assert.equal(panes().length, 2);
+		assert.equal(clock.now(), at, "no wait for the next tick");
+		assert.ok(urgentChange("mon", "◐ CI #42 3/5", "✗ CI #42 test"));
+		assert.ok(urgentChange("mon_run", "◐1", "◐2"), "every count change is urgent");
+		assert.ok(!urgentChange("mon", "◐ CI #42 3/5", "◐ CI #42 4/5"), "same glyph: text only");
+		assert.ok(urgentChange("mon", "◐ CI #42 3/5", null), "a $mon that goes is urgent");
+		assert.ok(urgentChange("mon", "✗ CI #42 test", "✗ CI #42 test ↳"), "pi starting on it is urgent too");
 	});
 
 	it("sends only the tokens that changed: a second monitor shows the counts row, its end hides it again", async () => {
@@ -261,7 +402,7 @@ describe("Herdr sidebar sync", () => {
 		await settle();
 		for (let t = 0; t < REFRESH_MS; t += MIN_INTERVAL_MS) await step(MIN_INTERVAL_MS);
 		assert.equal(panes().length, 2);
-		assert.deepEqual(panes()[1]!.tokens, { mon: "◐ CI #42 3/5 · 4m", mon_run: "◐2" });
+		assert.deepEqual(panes()[1]!.tokens, { mon: "◐ CI #42 3/5 4m", mon_run: "◐2" });
 		assert.equal(panes()[1]!.ttl_ms, TTL_MS);
 	});
 

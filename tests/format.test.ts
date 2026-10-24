@@ -46,7 +46,7 @@ describe("format", () => {
 		assert.equal(formatDuration(3_780_000), "1h03m");
 		assert.equal(formatShortDuration(42_000), "42s");
 		assert.equal(formatShortDuration(250_000), "4m");
-		assert.equal(formatShortDuration(3_900_000), "1h05");
+		assert.equal(formatShortDuration(3_900_000), "1h05m", "hours read like formatDuration, as in the dock's wide rows");
 	});
 
 	it("formats token counts compactly", () => {

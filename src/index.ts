@@ -118,6 +118,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		log: logTo("herdr.log"),
 		emit: (channel, data) => pi.events.emit(channel, data),
 		cwd: () => ctxRef?.cwd ?? process.cwd(),
+		desktop: (title, body) => desktop(title, body),
 	});
 
 	const safetyNet = new SafetyNet({

@@ -4,12 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BLOCKED_EVENT, GRACE_MS } from "../src/herdr/attention.ts";
-import { STARTUP_NOTE, type HerdrIntegration } from "../src/herdr/integration.ts";
-import type { Registry } from "../src/registry.ts";
-import { loadSettings, saveUserSetting } from "../src/settings.ts";
+import {
+	ATTENTION_CHOICES,
+	ATTENTION_QUESTION,
+	FailureToasts,
+	HerdrIntegration,
+	STARTUP_NOTE,
+} from "../src/herdr/integration.ts";
+import type { MonitorRecord, Registry } from "../src/registry.ts";
+import { DEFAULT_SETTINGS, isSet, loadSettings, saveUserSetting, type Settings } from "../src/settings.ts";
+import type { DockItem } from "../src/ui/dock.ts";
 import { fakeHerdr } from "./fake-herdr.ts";
 import { harness } from "./harness.ts";
-import { plainTheme, until } from "./helpers.ts";
+import { FakeClock, plainTheme, until } from "./helpers.ts";
 
 describe("pi-monitor settings file", () => {
 	it("saves one key in the monitor section and keeps every other setting", () => {
@@ -46,11 +53,12 @@ describe("pi-monitor settings file", () => {
 	});
 });
 
-function uiStub() {
+function uiStub(select?: (title: string, options: string[]) => Promise<string | undefined>) {
 	const notes: { text: string; type: string | undefined }[] = [];
 	return {
 		notes,
 		ui: {
+			...(select ? { select } : {}),
 			theme: plainTheme,
 			setWidget: () => {},
 			setStatus: () => {},
@@ -68,6 +76,7 @@ async function setup(
 		tui?: boolean;
 		desktopNotifications?: boolean;
 		reply?: Parameters<typeof fakeHerdr>[0];
+		select?: (title: string, options: string[]) => Promise<string | undefined>;
 	} = {},
 ) {
 	const server = await fakeHerdr(options.reply);
@@ -84,7 +93,7 @@ async function setup(
 					HERDR_CONFIG_PATH: configPath,
 					HERDR_BIN_PATH: "/nonexistent/herdr",
 				};
-	const stub = uiStub();
+	const stub = uiStub(options.select);
 	const desktop: string[] = [];
 	let internals: { registry: Registry; herdr: HerdrIntegration } | undefined;
 	const h = harness({
@@ -302,6 +311,190 @@ describe("Herdr notifications", () => {
 		assert.deepEqual(desktop, []);
 		await h.fire("session_shutdown", { reason: "quit" });
 		await server.close();
+	});
+});
+
+describe("Herdr toast for a failed job while the run goes on", () => {
+	const failingRun = (failingSince: number | undefined, partial: Partial<DockItem> = {}): DockItem => ({
+		id: "m1",
+		description: "e2e for main",
+		kind: "gh_run",
+		status: "running",
+		paused: false,
+		startedAt: 0,
+		activity: [],
+		handling: false,
+		progress: {
+			title: "e2e #17",
+			jobs: [
+				{ name: "checkout", state: failingSince === undefined ? "running" : "failure" },
+				{ name: "payments", state: "running" },
+			],
+		},
+		...(failingSince === undefined ? {} : { failingSince }),
+		...partial,
+	});
+
+	async function direct(settings: Partial<Settings> = {}) {
+		const server = await fakeHerdr();
+		const records: DockItem[] = [];
+		const desktop: string[] = [];
+		const herdr = new HerdrIntegration({
+			env: { HERDR_ENV: "1", HERDR_SOCKET_PATH: server.socketPath, HERDR_PANE_ID: "w1:p1" },
+			home: mkdtempSync(join(tmpdir(), "pi-monitor-home-")),
+			monitors: () => records as unknown as MonitorRecord[],
+			get: (id) => records.find((r) => r.id === id) as MonitorRecord | undefined,
+			settings: () => ({ ...DEFAULT_SETTINGS, herdr: "on", ...settings }),
+			reloadSettings: () => {},
+			clock: new FakeClock(),
+			log: () => {},
+			emit: () => {},
+			cwd: () => "/Users/dev/code/api",
+			desktop: (title, body) => desktop.push(`${title}: ${body}`),
+		});
+		herdr.attach({ mode: "tui", hasUI: true });
+		const toasts = () => server.received.filter((r) => r.method === "notification.show").map((r) => r.params);
+		const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+		const done = async () => {
+			await herdr.detach();
+			await server.close();
+		};
+		return { server, records, desktop, herdr, toasts, settle, done };
+	}
+
+	it("sends one request toast when a running GitHub run first gets a failed job, not on every change", async () => {
+		const { records, herdr, toasts, settle, done } = await direct();
+		records.push(failingRun(undefined));
+		herdr.changed();
+		records[0] = failingRun(1_000);
+		herdr.changed();
+		herdr.changed();
+		await until(() => toasts().length === 1);
+		await settle();
+		assert.deepEqual(toasts(), [
+			{ title: "✗ e2e #17 checkout failed", body: "pi · api · still running", sound: "request" },
+		]);
+		await done();
+	});
+
+	it("toasts again for a rerun of the same run, because each attempt counts on its own", async () => {
+		const { records, herdr, toasts, done } = await direct();
+		records.push(failingRun(1_000));
+		herdr.changed();
+		records[0] = failingRun(undefined);
+		herdr.changed();
+		records[0] = failingRun(9_000);
+		herdr.changed();
+		await until(() => toasts().length === 2);
+		await done();
+	});
+
+	it("skips the end toast of a run whose failed job already had one, but keeps it for a timeout", async () => {
+		const { records, herdr, toasts, desktop, settle, done } = await direct();
+		records.push(failingRun(1_000));
+		herdr.changed();
+		await until(() => toasts().length === 1);
+		let fallbacks = 0;
+		herdr.notify(
+			{ ...failingRun(1_000), status: "failure", summary: "e2e #17 failure after 5m: checkout" },
+			() => fallbacks++,
+		);
+		await settle();
+		assert.equal(toasts().length, 1, "the end says nothing new");
+		herdr.notify({ ...failingRun(1_000), status: "timeout", summary: "timed out after 30m" }, () => fallbacks++);
+		await until(() => toasts().length === 2);
+		assert.deepEqual([fallbacks, desktop], [0, []]);
+		await done();
+	});
+
+	it("sends the terminal notification instead when Herdr cannot be reached", async () => {
+		const { server, records, herdr, desktop, done } = await direct();
+		await server.close();
+		records.push(failingRun(1_000));
+		herdr.changed();
+		await until(() => desktop.length === 1);
+		assert.equal(desktop[0], "pi · monitor: ✗ e2e #17 checkout failed, the run goes on");
+		await done();
+	});
+
+	it("respects desktopNotifications: false, also for a failed job while running", async () => {
+		const { records, herdr, toasts, desktop, settle, done } = await direct({ desktopNotifications: false });
+		records.push(failingRun(1_000));
+		herdr.changed();
+		await settle();
+		assert.deepEqual([toasts(), desktop], [[], []]);
+		await done();
+	});
+
+	it("remembers toasted attempts by monitor id and failingSince", () => {
+		const toasts = new FailureToasts();
+		assert.deepEqual(
+			toasts.due([failingRun(1), failingRun(undefined, { id: "m2" })]).map((r) => r.id),
+			["m1"],
+		);
+		assert.deepEqual(toasts.due([failingRun(1)]), [], "once per attempt");
+		assert.ok(toasts.covers({ ...failingRun(1), status: "failure" }));
+		assert.ok(!toasts.covers({ ...failingRun(2), status: "failure" }), "a later attempt failed at the end only");
+		assert.ok(!toasts.covers({ ...failingRun(1), status: "timeout" }));
+	});
+});
+
+describe("/monitors herdr offers the blocked mark", () => {
+	it("asks once after setup and stores yes in the user settings", async () => {
+		const asked: string[][] = [];
+		const { h, server, stub, settingsFile, command } = await setup({
+			select: async (title, options) => {
+				asked.push([title, ...options]);
+				return options[0];
+			},
+		});
+		await h.fire("session_start", { reason: "startup" });
+		await command("herdr");
+		assert.deepEqual(asked, [[ATTENTION_QUESTION, ATTENTION_CHOICES.on, ATTENTION_CHOICES.off]]);
+		assert.equal(settingsFile().monitor.herdrAttention, true);
+		assert.match(stub.notes.at(-1)!.text, /Blocked mark on/);
+		await command("herdr");
+		assert.equal(asked.length, 1, "the answer stays, so the next run does not ask again");
+		await h.fire("session_shutdown", { reason: "quit" });
+		await server.close();
+	});
+
+	it("stores no as false, so the question does not come back", async () => {
+		const { h, server, settingsFile, command } = await setup({ select: async (_title, options) => options[1] });
+		await h.fire("session_start", { reason: "startup" });
+		await command("herdr");
+		assert.equal(settingsFile().monitor.herdrAttention, false);
+		assert.equal(isSet("herdrAttention", h.home, h.home), true);
+		await h.fire("session_shutdown", { reason: "quit" });
+		await server.close();
+	});
+
+	it("stores nothing when the user closes the picker, and says how to turn it on later", async () => {
+		const { h, server, stub, settingsFile, command } = await setup({ select: async () => undefined });
+		await h.fire("session_start", { reason: "startup" });
+		await command("herdr");
+		assert.equal("herdrAttention" in settingsFile().monitor, false);
+		assert.match(stub.notes.at(-1)!.text, /Blocked mark not set.*"herdrAttention": true/);
+		await h.fire("session_shutdown", { reason: "quit" });
+		await server.close();
+	});
+
+	it("says how to turn it on when pi has no picker, and never asks once herdrAttention is set", async () => {
+		const plain = await setup();
+		await plain.h.fire("session_start", { reason: "startup" });
+		await plain.command("herdr");
+		assert.match(plain.stub.notes.at(-1)!.text, /Blocked mark: add "herdrAttention": true to the "monitor" section/);
+		await plain.h.fire("session_shutdown", { reason: "quit" });
+		await plain.server.close();
+
+		let asked = 0;
+		const decided = await setup({ attention: true, select: async () => (asked++, undefined) });
+		await decided.h.fire("session_start", { reason: "startup" });
+		await decided.command("herdr");
+		assert.equal(asked, 0);
+		assert.doesNotMatch(decided.stub.notes.at(-1)!.text, /herdrAttention/);
+		await decided.h.fire("session_shutdown", { reason: "quit" });
+		await decided.server.close();
 	});
 });
 

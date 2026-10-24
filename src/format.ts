@@ -72,12 +72,12 @@ export function formatDuration(ms: number): string {
 	return `${s}s`;
 }
 
-/** Short clock for narrow UI: `42s`, `4m`, `1h05`. */
+/** Short clock for narrow UI and the Herdr sidebar: `42s`, `4m`, `1h05m`. Hours read like `formatDuration`. */
 export function formatShortDuration(ms: number): string {
 	const total = Math.max(0, Math.round(ms / 1000));
 	if (total < 60) return `${total}s`;
 	if (total < 3600) return `${Math.floor(total / 60)}m`;
-	return `${Math.floor(total / 3600)}h${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}`;
+	return `${Math.floor(total / 3600)}h${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}m`;
 }
 
 export function formatTokens(tokens: number): string {

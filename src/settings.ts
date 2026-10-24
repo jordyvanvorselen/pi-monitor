@@ -76,6 +76,13 @@ export function loadSettings(cwd: string, home = homedir()): Settings {
 	return merged;
 }
 
+/** True when the user or project settings hold a valid value for `key`, so the default is not in play. */
+export function isSet(key: keyof Settings, cwd: string, home = homedir()): boolean {
+	const user = validate(readMonitorSection(userSettingsPath(home)));
+	const project = validate(readMonitorSection(join(cwd, ".pi", "settings.json")));
+	return key in user || key in project;
+}
+
 export function userSettingsPath(home = homedir()): string {
 	return join(home, ".pi", "agent", "settings.json");
 }
