@@ -1,6 +1,6 @@
 {
   "name": "@jordyvanvorselen/pi-monitor",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Watch long-running processes like GitHub Actions runs in the background. Pi wakes only when something worth knowing happens.",
   "type": "module",
   "license": "MIT",
@@ -46,22 +46,25 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^1.3.0",
-    "@earendil-works/pi-tui": "^1.3.0",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^24.0.0",
-    "eslint": "^10.11.0",
+    "@types/node": "^24.19.2",
+    "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
-    "prettier": "^3.9.9",
+    "prettier": "^3.9.10",
     "semver": "^7.8.5",
-    "typebox": "^1.4.2",
-    "typescript": "^5.9.0",
-    "typescript-eslint": "^8.71.0"
+    "typebox": "^1.4.3",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
     "smol-toml": "^1.9.1"
+  },
+  "overrides": {
+    "undici": "^8.12.3"
   }
 }
