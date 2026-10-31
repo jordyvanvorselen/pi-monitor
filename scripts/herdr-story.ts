@@ -244,11 +244,10 @@ export async function simulate(): Promise<Timeline> {
 	const live = SESSIONS.map((session) => {
 		let items: DockItem[] = [];
 		const sidebar = new HerdrSidebar({
-			request: async (_method, params) => {
-				timeline.reports.push({ pane: session.pane, at: at(), tokens: { ...(params.tokens as Report["tokens"]) } });
-				return { result: {} };
+			send: async (tokens) => {
+				timeline.reports.push({ pane: session.pane, at: at(), tokens: { ...(tokens as Report["tokens"]) } });
+				return true;
 			},
-			paneId: session.pane,
 			items: () => items,
 			clock,
 		});

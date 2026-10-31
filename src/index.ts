@@ -8,6 +8,7 @@ import { SafetyNet } from "./intercept/safety-net.ts";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { cleanupOldLogs, LOG_ROOT, MonitorLog, sessionLogDir } from "./log.ts";
+import type { Run as HerdrRun } from "./herdr/desktop.ts";
 import { HERDR_USAGE, HerdrIntegration } from "./herdr/integration.ts";
 import { desktopNotification, openExternal } from "./notify.ts";
 import { Registry, startMonitor, type MonitorEntry } from "./registry.ts";
@@ -31,6 +32,8 @@ export interface MonitorOverrides {
 	logRoot?: string;
 	home?: string;
 	notify?: (title: string, body: string) => void;
+	/** Runs `hc` and `herdr-app` for the Herdr desktop app. */
+	herdrRun?: HerdrRun;
 	/** Environment for the interceptor kill switch. */
 	env?: NodeJS.ProcessEnv;
 	/** Hands internals to tests. */
@@ -119,6 +122,7 @@ export default function monitorExtension(pi: ExtensionAPI, overrides: MonitorOve
 		emit: (channel, data) => pi.events.emit(channel, data),
 		cwd: () => ctxRef?.cwd ?? process.cwd(),
 		desktop: (title, body) => desktop(title, body),
+		...(overrides.herdrRun ? { run: overrides.herdrRun } : {}),
 	});
 
 	const safetyNet = new SafetyNet({

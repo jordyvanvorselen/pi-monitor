@@ -222,6 +222,15 @@ With the integration on, the notification when a monitor ends goes to Herdr as a
 - Herdr cuts long values at the sidebar width with `…`. The `$mon` line aims at the default 26-column sidebar, so in a narrower sidebar its end can still fall off. The counts row fits easily.
 - Errors talking to Herdr never reach pi or the dock. They go to `<tmp>/pi-monitor/herdr.log`, and pi-monitor waits longer after each failure (up to a minute) before it tries again.
 
+### Herdr desktop app
+
+The Herdr desktop app (`herdr-app`) does not read `config.toml`. pi-monitor finds it by `HC_TERMINAL_ID`. When pi runs in the Herdr TUI inside the desktop app, the TUI setup above applies.
+
+- pi-monitor puts the same values on pi's own terminal as labels: `pi-monitor.mon`, `pi-monitor.mon_fail`, `pi-monitor.mon_run`, `pi-monitor.mon_wait`, `pi-monitor.mon_ok`, and `pi-monitor.until`. It sets them with `hc label`. The mod ignores them after `pi-monitor.until`, so a crashed pi leaves nothing on screen. pi-monitor removes the labels when nothing shows and at shutdown.
+- `/monitors herdr` clones Herdr's `agents` mod to `mods/pi-monitor-agents` and adds a line under each agent and sub-agent with its monitors. Shipped layouts cannot point at another mod, so it also clones the shown layout to `<layout>-pi-monitor`, points its agents list at the new mod and switches to it. Running the command again makes a fresh clone, which picks up a newer agents list after a Herdr update.
+- `/monitors herdr off` stops the labels, switches back to the layout the clone came from and deletes both clones. It keeps the mod when one of your own layouts still uses it.
+- Toasts and the blocked mark are TUI only. In the desktop app, pi-monitor sends its usual terminal notification.
+
 ## Sessions and logs
 
 Every start and end is stored in the session as a custom entry. These entries never reach the model. After a resume or `/reload`, unfinished `gh_run` and `gh_pr` monitors restart with the same id. Commands, file tails, URL and pid watchers ended with the old session and show as "ended with the session".
