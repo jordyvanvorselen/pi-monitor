@@ -14,9 +14,32 @@ export const MIN_INTERVAL_MS = 1_000;
 /** Text-only changes of `$mon` (clock, ETA bar, job counts, name) wait until this long after the last report. */
 export const TEXT_INTERVAL_MS = 5_000;
 
+/**
+ * Delivers changed tokens: a null clears one. `ttlMs` is set when a value shows: the receiver drops the tokens
+ * after that long without a new report. Resolves to true when the receiver has them, false when it could not
+ * be reached (the sidebar tries again on the next tick).
+ */
+export type TokenSender = (tokens: Record<string, string | null>, ttlMs: number | undefined) => Promise<boolean>;
+
+/** Sends tokens as pane metadata to the Herdr TUI, with one fixed source. */
+export function paneSender(
+	request: (method: string, params: Record<string, unknown>) => Promise<HerdrReply | undefined>,
+	paneId: string,
+): TokenSender {
+	return async (tokens, ttlMs) => {
+		const reply = await request("pane.report_metadata", {
+			pane_id: paneId,
+			source: SOURCE,
+			tokens,
+			...(ttlMs !== undefined ? { ttl_ms: ttlMs } : {}),
+		});
+		// Refused (logged by the client) counts as delivered: do not repeat it every second.
+		return reply !== undefined;
+	};
+}
+
 export interface SidebarDeps {
-	request(method: string, params: Record<string, unknown>): Promise<HerdrReply | undefined>;
-	paneId: string;
+	send: TokenSender;
 	items(): readonly DockItem[];
 	clock: Clock;
 	/** The token values for these monitors. Default: `$mon` and the count tokens. */
@@ -39,7 +62,7 @@ export function urgentChange(key: string, before: string | null | undefined, aft
 }
 
 /**
- * Keeps pi-monitor's pane tokens in Herdr up to date: `$mon` and the count tokens. Only the pane:
+ * Keeps pi-monitor's pane tokens in Herdr up to date (TUI pane metadata or desktop terminal labels): `$mon` and the count tokens. Only the pane:
  * two pi sessions in one space would overwrite each other's space token, because Herdr keeps the
  * last value per key. One report per tick carries every changed token. Sends only on change and never
  * more than once a second. A new glyph or count goes out on the next tick, text-only changes of `$mon`
@@ -120,14 +143,8 @@ export class HerdrSidebar {
 
 	private async report(tokens: Tokens): Promise<void> {
 		const anyValue = Object.values(tokens).some((v) => v !== null);
-		const reply = await this.deps.request("pane.report_metadata", {
-			pane_id: this.deps.paneId,
-			source: SOURCE,
-			tokens,
-			...(anyValue ? { ttl_ms: TTL_MS } : {}),
-		});
-		// Not reached: try again on the next tick. Refused (logged by the client): do not repeat it every second.
-		if (!reply) return;
+		// Not reached: try again on the next tick.
+		if (!(await this.deps.send(tokens, anyValue ? TTL_MS : undefined))) return;
 		Object.assign(this.sent, tokens);
 		if (anyValue) this.sentAt = this.deps.clock.now();
 	}

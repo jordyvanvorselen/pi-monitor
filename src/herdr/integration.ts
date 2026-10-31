@@ -20,7 +20,9 @@ import {
 	type HerdrPalette,
 	type SetupResult,
 } from "./config.ts";
-import { HerdrSidebar } from "./sidebar.ts";
+import { DesktopApp } from "./desktop-app.ts";
+import { defaultRun, DesktopLabels, detectHerdrDesktop, type DesktopTarget, type Run } from "./desktop.ts";
+import { HerdrSidebar, paneSender, type TokenSender } from "./sidebar.ts";
 import { capChars, GLYPHS, PANE_TOKEN } from "./tokens.ts";
 
 export const STARTUP_NOTE =
@@ -42,6 +44,8 @@ export interface HerdrDeps {
 	cwd(): string;
 	/** The terminal notification, for when Herdr cannot be reached. */
 	desktop(title: string, body: string): void;
+	/** Runs `hc` and `herdr-app` for the Herdr desktop app. Default: the real programs. */
+	run?: Run;
 }
 
 type Ui = {
@@ -115,11 +119,17 @@ export function paletteFor(theme: unknown): HerdrPalette {
 	return { ok: hex(look.success), failed: hex(look.error), running: hex(look.warning) };
 }
 
-/** Herdr sidebar tokens, toasts and the blocked mark, for pi running in a Herdr pane. */
+/**
+ * Herdr sidebar tokens, toasts and the blocked mark, for pi running in a Herdr pane. In the Herdr desktop app
+ * only the sidebar part: the same tokens go out as labels on pi's terminal, and a mod shows them.
+ */
 export class HerdrIntegration {
 	readonly target: HerdrTarget | undefined;
+	/** Set when pi runs in the Herdr desktop app instead of the Herdr TUI. */
+	readonly desktopTarget: DesktopTarget | undefined;
 	private readonly deps: HerdrDeps;
 	private readonly client: HerdrClient | undefined;
+	private readonly labels: DesktopLabels | undefined;
 	private readonly attention: Attention;
 	private sidebar: HerdrSidebar | undefined;
 	private tui = false;
@@ -129,8 +139,17 @@ export class HerdrIntegration {
 	constructor(deps: HerdrDeps) {
 		this.deps = deps;
 		this.target = detectHerdr(deps.env);
+		this.desktopTarget = detectHerdrDesktop(deps.env);
 		this.client = this.target
 			? new HerdrClient({ socketPath: this.target.socketPath, log: deps.log, now: () => deps.clock.now() })
+			: undefined;
+		this.labels = this.desktopTarget
+			? new DesktopLabels({
+					terminal: this.desktopTarget.terminal,
+					run: deps.run ?? defaultRun,
+					log: deps.log,
+					now: () => deps.clock.now(),
+				})
 			: undefined;
 		this.attention = new Attention({
 			emit: (channel, data) => deps.emit(channel, data),
@@ -139,9 +158,17 @@ export class HerdrIntegration {
 		});
 	}
 
-	/** Inside Herdr, in the terminal UI, and turned on. */
+	/** Inside Herdr (TUI or desktop app), in pi's terminal UI, and turned on. */
 	get active(): boolean {
-		return this.target !== undefined && this.tui && this.deps.settings().herdr === "on";
+		return this.inside && this.tui && this.deps.settings().herdr === "on";
+	}
+
+	private get inside(): boolean {
+		return this.target !== undefined || this.desktopTarget !== undefined;
+	}
+
+	private desktopApp(): DesktopApp {
+		return new DesktopApp({ env: this.deps.env, home: this.home(), run: this.deps.run ?? defaultRun });
 	}
 
 	/** Bind to a session. Starts the sidebar when the integration is on. */
@@ -159,7 +186,7 @@ export class HerdrIntegration {
 	/** The one-time note in pi's startup area, when pi runs in Herdr and the user has not decided yet. */
 	startupNote(event: { reason?: string }, ui: Ui): void {
 		if (this.noteShown || event.reason !== "startup") return;
-		if (!this.target || !this.tui || this.deps.settings().herdr !== undefined) return;
+		if (!this.inside || !this.tui || this.deps.settings().herdr !== undefined) return;
 		this.noteShown = true;
 		// A warning, like other extensions' startup notes: pi draws it in yellow with "Warning: " in front.
 		// An info line is dim grey and easy to miss among the startup output.
@@ -170,6 +197,8 @@ export class HerdrIntegration {
 	changed(): void {
 		if (!this.active) return;
 		this.sidebar?.update();
+		// Toasts and the blocked mark are the Herdr TUI's. The desktop app keeps pi's own notifications.
+		if (!this.target) return;
 		const running = this.deps.monitors().filter((m) => m.status === "running");
 		this.attention.sync(running);
 		for (const record of this.failures.due(running)) this.notifyFailing(record);
@@ -177,7 +206,8 @@ export class HerdrIntegration {
 
 	/** A monitor ended. Failures may mark the pane as blocked. */
 	ended(record: MonitorRecord): void {
-		if (!this.active || !this.deps.settings().herdrAttention || record.probationUntil !== undefined) return;
+		if (!this.active || !this.target || !this.deps.settings().herdrAttention || record.probationUntil !== undefined)
+			return;
 		if (record.status === "failure" || record.status === "timeout") this.attention.failed(record);
 	}
 
@@ -217,9 +247,10 @@ export class HerdrIntegration {
 	async command(args: string, ui: Ui): Promise<void> {
 		const sub = args.trim();
 		try {
-			if (sub === "" || sub === "on") return await this.setup(ui);
-			if (sub === "off") return await this.turnOff(ui);
-			if (sub === "status") return ui.notify(this.status(), "info");
+			const desktop = this.desktopTarget !== undefined;
+			if (sub === "" || sub === "on") return await (desktop ? this.setupDesktop(ui) : this.setup(ui));
+			if (sub === "off") return await (desktop ? this.turnOffDesktop(ui) : this.turnOff(ui));
+			if (sub === "status") return ui.notify(desktop ? await this.desktopStatus() : this.status(), "info");
 			ui.notify(HERDR_USAGE, "error");
 		} catch (error) {
 			const command = ["/monitors herdr", sub].filter(Boolean).join(" ");
@@ -238,11 +269,13 @@ export class HerdrIntegration {
 
 	/** Start or stop the sidebar and the blocked mark to match the current state. */
 	private async apply(): Promise<void> {
-		if (this.active && this.target && this.client && !this.sidebar) {
-			const client = this.client;
+		const send: TokenSender | undefined =
+			this.target && this.client
+				? paneSender((method, params) => this.client!.request(method, params), this.target.paneId)
+				: this.labels?.send;
+		if (this.active && send && !this.sidebar) {
 			this.sidebar = new HerdrSidebar({
-				request: (method, params) => client.request(method, params),
-				paneId: this.target.paneId,
+				send,
 				items: () => this.deps.monitors(),
 				clock: this.deps.clock,
 			});
@@ -392,6 +425,63 @@ export class HerdrIntegration {
 				`The $${PANE_TOKEN} rows in ${this.tilde(path)} stay and show nothing. To remove them, delete those rows below the "${MARKER}" comment.`,
 			);
 		ui.notify(lines.join("\n"), "info");
+	}
+
+	private async setupDesktop(ui: Ui): Promise<void> {
+		const settingsPath = saveUserSetting("herdr", "on", this.home());
+		this.deps.reloadSettings();
+		const lines = [
+			"Herdr app agents list on.",
+			`Setting: "herdr": "on" in the "monitor" section of ${this.tilde(settingsPath)}`,
+		];
+		let level: "info" | "warning" = "info";
+		try {
+			lines.push(...(await this.desktopApp().setup()));
+		} catch (error) {
+			level = "warning";
+			lines.push(
+				`Could not set up the Herdr app: ${(error as Error).message}.`,
+				"pi-monitor still labels this terminal. Run /monitors herdr again to retry.",
+			);
+		}
+		if (!this.tui) lines.push("Monitors show in the agents list in pi's interactive mode.");
+		await this.apply();
+		ui.notify(lines.join("\n"), level);
+	}
+
+	private async turnOffDesktop(ui: Ui): Promise<void> {
+		const settingsPath = saveUserSetting("herdr", "off", this.home());
+		this.deps.reloadSettings();
+		await this.apply();
+		const lines = [
+			"Herdr app agents list off. pi-monitor no longer labels this terminal, and the startup note stays hidden.",
+			`Setting: "herdr": "off" in the "monitor" section of ${this.tilde(settingsPath)}`,
+		];
+		let level: "info" | "warning" = "info";
+		try {
+			lines.push(...(await this.desktopApp().remove()));
+		} catch (error) {
+			level = "warning";
+			lines.push(`Could not undo the Herdr app setup: ${(error as Error).message}.`);
+		}
+		ui.notify(lines.join("\n"), level);
+	}
+
+	private async desktopStatus(): Promise<string> {
+		const setting = this.deps.settings().herdr;
+		const app = this.desktopApp();
+		const state = await app.state();
+		const layout =
+			state.layout === undefined
+				? "the Herdr app did not answer"
+				: `${state.layout}, ${state.showing ? "shows" : "does not show"} the monitor agents list`;
+		return [
+			`Herdr app: pi runs in terminal ${this.desktopTarget!.terminal}`,
+			`Agents list: ${setting === "on" ? "on" : setting === "off" ? "off" : "not set up (/monitors herdr)"}${this.active ? ", labelling this terminal" : ""}`,
+			`Mod: ${state.installed ? "installed" : "not installed"} in ${this.tilde(app.modFolder)}`,
+			`Layout: ${layout}`,
+			...(this.labels?.backingOff ? ["hc failed the last time. pi-monitor tries again later."] : []),
+		].join("\n");
 	}
 
 	private hasRows(path: string): boolean {

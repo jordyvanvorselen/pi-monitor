@@ -4,6 +4,7 @@ import { Attention, BLOCKED_EVENT, GRACE_MS } from "../src/herdr/attention.ts";
 import {
 	HerdrSidebar,
 	MIN_INTERVAL_MS,
+	paneSender,
 	REFRESH_MS,
 	SOURCE,
 	TEXT_INTERVAL_MS,
@@ -275,11 +276,10 @@ function sidebarSetup(items: DockItem[], options: { fail?: boolean } = {}) {
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const state = { fail: options.fail ?? false };
 	const sidebar = new HerdrSidebar({
-		request: async (method, params) => {
+		send: paneSender(async (method, params) => {
 			requests.push({ method, params });
 			return state.fail ? undefined : { result: { type: "ok" } };
-		},
-		paneId: "w1:p1",
+		}, "w1:p1"),
 		items: () => items,
 		clock,
 	});
